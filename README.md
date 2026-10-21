@@ -131,7 +131,7 @@ python tests/knowledge_eval.py       # rag 검색 적중 (top-3, --k 1)
   LLM 문장에 facts에 없는 숫자(31 초과) −20, 검색 결과에 없는 규정 인용 −20. 80점 미만이면 피드백을 들고 ⑧로(최대 3회).
 - 신규 규격 후보는 박스왕 기성품만 본다(맞춤 제작은 다루지 않음).
 - ⑩ 반려: 키워드 규칙(`보충만`/`신규 제외`, `안전 재고 N일`) 위에 모델 해석을 얹는다. 바꿀 수 있는 기준값은
-  `no_new_specs, allow_tilt, safety_days(3~30), rounding_unit(50~1000), gate.CATALOG.monthly_saving·share_pct·delta_fill`.
+  `no_new_specs, safety_days(3~30), rounding_unit(50~1000), gate.CATALOG.monthly_saving·share_pct·delta_fill`.
   그 밖의 요청은 '확인 필요'에 "담당자 처리 필요"로 적는다.
 - ① 과거 제안: 같은 규격을 지난 제안에서도 냈는데 아직 미등록이면 '확인 필요'에 표시하고,
   지난 제안의 예측 출고와 그 달 실제 출고를 비교해 적는다.
@@ -201,8 +201,8 @@ BOXKING_BASE_URL=http://127.0.0.1:8765 BOXKING_MIN_DELAY=0 CATALOG_DB=test.db py
 ```
 
 ## 들어가는지 판정·충진율 (packing-engine)
-- 상품 치수 + 여유 `margin_mm`(에이전트 기본 5)를 6방향 회전으로 먼저 본다.
-- `allow_tilt`(에이전트 기본 켬)이면 안 들어가는 박스에 한 평면 기울임 판정(Carver 조건)을 적용한다:
+- 상품 치수를 6방향 회전(90도)으로 먼저 본다.
+- 판정 기준은 서버 상품 매칭(`FillRateCalculator`)과 같다. 매 실행 `GET /internal/v1/matching-policy`로 서버 `chagok.matching.tilted`(기울임 사용·여유)를 읽고, 기본 판정 여유는 0mm. 기울임이 켜져 있으면 안 들어가는 박스에 한 평면 기울임 판정(Carver 조건)을 적용한다:
   상품 변 (p,q,r) × 박스 변 (a,b,c)의 모든 순서에서 r ≤ c 이고 rectFits(p,q,a,b)이면 들어감.
   보수적 판정이라 통과하면 실제로 들어간다. 기울여야 들어가는 배정은 `fit="TILTED"`로 표시하고 '확인 필요'에 검토 대상으로 적는다.
 - 충진율은 기울임과 관계없이 부피비(상품 부피 / 박스 부피).
