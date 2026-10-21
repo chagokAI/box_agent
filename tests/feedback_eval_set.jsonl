@@ -1,0 +1,12 @@
+{"id": "E01", "comment": "이번엔 새 박스는 빼고 있는 박스만 채워 주세요", "expect": {"no_new_specs": true}, "expectUnsupported": false}
+{"id": "E02", "comment": "연말이라 물량이 많으니 안전 재고 여유 있게 잡아 주세요", "expect": {"safety_days": 10}, "expectUnsupported": false}
+{"id": "E03", "comment": "안전재고 14일로 해주세요", "expect": {"safety_days": 14}, "expectUnsupported": false}
+{"id": "E04", "comment": "비수기라 안전 재고는 줄여도 됩니다", "expect": {"safety_days": 5}, "expectUnsupported": false}
+{"id": "E05", "comment": "월 절감 40만원은 넘어야 새 규격 등록할 가치가 있어요", "expect": {"gate.CATALOG.monthly_saving": 400000}, "expectUnsupported": false}
+{"id": "E06", "comment": "비스듬히 넣는 포장은 현장에서 안 됩니다. 그 판정은 빼 주세요", "expect": {"allow_tilt": false}, "expectUnsupported": false}
+{"id": "E07", "comment": "공급사가 500개 단위로만 받는대요", "expect": {"rounding_unit": 500}, "expectUnsupported": false}
+{"id": "E08", "comment": "5호는 이번 발주에서 제외해 주세요", "expect": {}, "expectUnsupported": true}
+{"id": "E09", "comment": "충진율 개선이 15%p는 넘어야 바꿀 의미가 있어요", "expect": {"gate.CATALOG.delta_fill": 15}, "expectUnsupported": false}
+{"id": "E10", "comment": "출고 비중 5% 미만 구간은 신규 규격 대상에서 빼 주세요", "expect": {"gate.CATALOG.share_pct": 5}, "expectUnsupported": false}
+{"id": "E11", "comment": "신규 규격 없이 보충만, 그리고 안전 재고 10일", "expect": {"no_new_specs": true, "safety_days": 10}, "expectUnsupported": false}
+{"id": "E12", "comment": "활성 규격이 너무 많아요. 안 쓰는 규격 정리안도 같이 주세요", "expect": {}, "expectUnsupported": true}
