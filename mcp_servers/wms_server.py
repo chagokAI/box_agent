@@ -171,6 +171,15 @@ def _mock_monthly_shipments(end_month: str, months: int) -> list:
 
 # ---------------------------------------------------------------- Tools
 @mcp.tool()
+def get_matching_policy() -> dict:
+    """박스 수용 판정 정책(서버 chagok.matching): 기울임 판정 사용 여부와 기울임 여유(mm).
+    충진율 계산을 서버 상품 매칭과 같은 기준으로 하려고 매 실행마다 읽는다. 기본 판정 여유는 서버와 같이 0"""
+    if not api.enabled():
+        return {"tiltedEnabled": False, "tiltedClearanceMm": 0, "source": "mock"}
+    return {**_call(api.get, "/matching-policy"), "source": "chagok-api"}
+
+
+@mcp.tool()
 def list_warehouses() -> dict:
     """센터(warehouse) 목록을 반환한다."""
     if api.enabled():
