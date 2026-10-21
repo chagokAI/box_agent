@@ -1,0 +1,13 @@
+langgraph>=1.0
+langgraph-checkpoint-postgres>=3.0  # State·Memory: 승인 대기 상태를 PostgreSQL(box_agent 스키마)에 저장 (DB_URL 설정 시)
+psycopg-pool>=3.2
+mcp>=1.10,<2      # FastMCP 1.x API 사용 (2.x는 MCPServer로 이름 변경됨). stdio + Streamable HTTP
+numpy
+httpx             # 박스왕 수집, Spring 내부 API(/internal/v1/**) 호출
+beautifulsoup4    # 박스왕 목록 HTML 파싱
+psycopg[binary]>=3.1  # rag-mcp 벡터 검색(pgvector)·checkpointer. 업무 데이터는 DB 직접 접근 안 함
+openai>=1.60         # 문장 작성·규정 인용·반려 해석·임베딩(선택). OPENAI_API_KEY 없으면 규칙 기반
+fastapi>=0.115       # agent_server.py (작업 실행·SSE·승인 재개)
+uvicorn>=0.30
+sse-starlette>=2.0
+langsmith>=0.1       # 선택: LANGSMITH_API_KEY 가 있으면 trace 전송

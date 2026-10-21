@@ -1,0 +1,8 @@
+.env
+.venv
+**/__pycache__
+proposals
+tests/results
+run_mcp.log
+*.db-journal
+test.db

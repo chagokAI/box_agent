@@ -1,0 +1,17 @@
+# 비밀값
+.env
+
+# 로컬 환경
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# DB·데이터 (박스왕 카탈로그는 catalog_server.py --refresh, 시드 SQL 은 각자 생성)
+*.db
+*.db-journal
+sql/
+
+# 실행 결과물
+proposals/
+run_mcp.log
