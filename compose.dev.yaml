@@ -1,0 +1,6 @@
+# 로컬 확인용: agent 를 127.0.0.1:8000 에 연다(운영 구성에서는 공개하지 않는다)
+#   docker compose -f compose.yaml -f compose.dev.yaml up -d --build
+services:
+  agent:
+    ports:
+      - "127.0.0.1:${AGENT_PORT:-8000}:8000"

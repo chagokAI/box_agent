@@ -1,0 +1,103 @@
+# 박스 주문 제안 에이전트 배포 구성: agent(FastAPI) + business-mcp + rag-mcp (+ 1회성 rag-ingest)
+#
+# Spring(backend)·PostgreSQL(postgres)이 떠 있는 docker network 에 합류한다. 서비스 이름으로 서로 부른다.
+#   agent        → business-mcp:9101/mcp, rag-mcp:9102/mcp (MCP Streamable HTTP), postgres(checkpointer), LLM API
+#   business-mcp → backend:8080/internal/v1/** (X-Internal-Token). DB 에 직접 접근하지 않는다
+#   rag-mcp      → postgres(pgvector, box_agent.knowledge), 임베딩 API
+# 공개 포트는 없다(공개는 frontend·backend 뿐). 로컬 확인용으로만 compose.dev.yaml 이 127.0.0.1 에 연다.
+#
+# 실행
+#   1) Spring 쪽 먼저: server/chagok 에서 docker compose -f compose.web.yaml up -d   (backend 에 INTERNAL_API_TOKEN 필요)
+#   2) cp .env.example .env 후 값 채우기 (OPENAI_API_KEY, INTERNAL_API_TOKEN, DB_PASSWORD …)
+#   3) docker compose --profile init run --rm rag-ingest     # 규정·반려 기록 색인 (문서가 바뀔 때만)
+#   4) docker compose up -d --build
+#   합류할 네트워크는 AGENT_NETWORK (compose.web.yaml 이면 chagok-web_default, 로컬 인프라 compose.yaml 이면 chagok_default)
+
+name: chagok-agent
+
+x-agent-image: &agent-image
+  image: chagok-box-agent:local
+  build: .
+  restart: unless-stopped
+  networks: [chagok]
+
+x-db-env: &db-env
+  DB_URL: jdbc:postgresql://${DB_HOST:-postgres}:5432/${DB_NAME:-chagok}
+  DB_USERNAME: ${DB_USERNAME:-postgres}
+  DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD를 .env에 설정하세요}
+
+services:
+  business-mcp:
+    <<: *agent-image
+    command: ["python", "mcp_servers/business_mcp.py", "--http"]
+    environment:
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: "9101"
+      MCP_ALLOWED_HOSTS: business-mcp:*
+      BUSINESS_API_URL: ${AGENT_BUSINESS_API_URL:-http://backend:8080}   # 로컬 CLI 용 BUSINESS_API_URL 과 분리
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?INTERNAL_API_TOKEN을 .env에 설정하세요 (backend 와 같은 값)}
+      SHIPMENT_EVENT_STATUSES: ${SHIPMENT_EVENT_STATUSES:-}
+    volumes:
+      - proposals:/app/proposals          # save_proposal 사본(json/md)
+    healthcheck: &tcp-health
+      test: ["CMD", "python", "-c", "import os,socket; socket.create_connection(('127.0.0.1', int(os.environ['MCP_PORT'])), 2)"]
+      interval: 10s
+      timeout: 3s
+      start_period: 15s
+      retries: 6
+
+  rag-mcp:
+    <<: *agent-image
+    command: ["python", "mcp_servers/rag_mcp.py", "--http"]
+    environment:
+      <<: *db-env
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: "9102"
+      MCP_ALLOWED_HOSTS: rag-mcp:*
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}            # 없으면 로컬 2-gram 검색(KNOWLEDGE_EMBED=local 로 적재 필요)
+      KNOWLEDGE_EMBED: ${KNOWLEDGE_EMBED:-openai}
+    healthcheck: *tcp-health
+
+  agent:
+    <<: *agent-image
+    command: ["python", "agent_server.py", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      <<: *db-env                                    # checkpointer(box_agent 스키마)
+      BUSINESS_MCP_URL: http://business-mcp:9101/mcp
+      RAG_MCP_URL: http://rag-mcp:9102/mcp
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?INTERNAL_API_TOKEN을 .env에 설정하세요}   # Spring → agent 호출 인증
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      BOX_AGENT_LLM_MODEL: ${BOX_AGENT_LLM_MODEL:-gpt-5.4-mini}
+      BOX_AGENT_LLM_FALLBACK_MODEL: ${BOX_AGENT_LLM_FALLBACK_MODEL:-}
+      BOX_AGENT_MAX_CONCURRENT: ${BOX_AGENT_MAX_CONCURRENT:-2}
+      LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
+      LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-box-agent}
+    volumes:
+      - proposals:/app/proposals          # proposals/traces/<taskId>.jsonl
+    depends_on:
+      business-mcp: {condition: service_healthy}
+      rag-mcp: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/internal/agent/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 6
+
+  rag-ingest:                              # 1회성: knowledge/ 문서 → box_agent.knowledge
+    <<: *agent-image
+    restart: "no"
+    profiles: [init]
+    command: ["python", "mcp_servers/knowledge_server.py", "--ingest"]
+    environment:
+      <<: *db-env
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      KNOWLEDGE_EMBED: ${KNOWLEDGE_EMBED:-openai}
+
+volumes:
+  proposals:
+
+networks:
+  chagok:
+    external: true
+    name: ${AGENT_NETWORK:-chagok-web_default}
