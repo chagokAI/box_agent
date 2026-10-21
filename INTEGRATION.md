@@ -87,12 +87,30 @@ CLI 실행 때 DB 접속(`DB_URL`)은 `server/chagok/.env` 에서 같이 읽는�
 
 ## 3. DB (최종본: `db/chagok.dump`)
 
-PostgreSQL 17 + pgvector. 복원:
+파일 두 가지(내용 같음, `db/SHA256SUMS` 로 받은 파일이 온전한지 확인):
+
+| 파일 | 형식 | 쓰는 경우 |
+|---|---|---|
+| `db/chagok.dump` | pg_dump 압축(바이너리) | PostgreSQL 17 이상 + `pg_restore`. 편집기·DBeaver 로 열면 깨진 글자로 보이는 게 정상 |
+| `db/chagok.sql` | 일반 SQL 텍스트 | PostgreSQL 16·17, psql·DBeaver 등 어느 도구든 |
+
+공통 조건: **pgvector 확장이 있는 PostgreSQL**(`pgvector/pgvector` 이미지), **비어 있는 DB**(서버를 먼저 띄워 테이블이 생긴 DB 에 넣으면 중복 오류).
 ```bash
 docker exec chagok-postgres-1 psql -U postgres -d postgres -c "DROP DATABASE IF EXISTS chagok WITH (FORCE)" -c "CREATE DATABASE chagok"
+# A) dump (PostgreSQL 17+)
 docker cp db/chagok.dump chagok-postgres-1:/tmp/chagok.dump
 docker exec chagok-postgres-1 pg_restore -U postgres -d chagok --no-owner /tmp/chagok.dump
+# B) sql (PostgreSQL 16·17)
+docker exec -i chagok-postgres-1 psql -v ON_ERROR_STOP=1 -U postgres -d chagok < db/chagok.sql
+# 확인
+docker exec chagok-postgres-1 psql -U postgres -d chagok -c "select count(*) from item_event"   # 134162
 ```
+| 증상 | 원인 |
+|---|---|
+| `unsupported version (1.16) in file header` | PostgreSQL 16 이하에 dump → `chagok.sql` 사용 |
+| `type "vector" does not exist` / `extension "vector" is not available` | pgvector 없음 → `pgvector/pgvector` 이미지 |
+| `relation ... already exists` | 서버가 먼저 테이블을 만든 DB → DB 를 지우고 다시 만든 뒤 복원, 서버는 복원 뒤에 기동 |
+| 열면 깨진 글자 | `.dump` 는 바이너리 → `pg_restore` 또는 `chagok.sql` |
 
 ### 3-1. 센터·로그인
 | 항목 | 값 |
