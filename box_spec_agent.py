@@ -257,7 +257,7 @@ def cats(c: dict, k: int = 2) -> str:
 # ---------------------------------------------------------------------------
 def default_config(job: dict) -> dict:
     return {
-        "margin_mm": 5, "allow_tilt": True, "low_fill_pct": 45, "max_loops": 3, "eval_pass": 80, "max_clusters": 2,
+        "margin_mm": 0, "allow_tilt": False, "tilt_clearance_mm": 0, "low_fill_pct": 45, "max_loops": 3, "eval_pass": 80, "max_clusters": 2,
         "safety_days": 7, "rounding_unit": 100, "lookback_days": 90,
         "gate": {
             "CATALOG": {"monthly_saving": 300_000, "share_pct": 3, "delta_fill": 10},
@@ -272,6 +272,10 @@ async def load_context(state: AgentState):
     cfg = default_config(job)
     log("load_context", f"job={job['jobId']} warehouse={job['warehouseId']} ({job.get('warehouseName', '')}) "
                         f"targetMonth={job['targetMonth']}")
+    pol = await mcp_call("load_context", "business", "get_matching_policy")   # 서버 상품 매칭과 같은 판정 기준
+    cfg.update(allow_tilt=pol["tiltedEnabled"], tilt_clearance_mm=pol["tiltedClearanceMm"])
+    log("load_context", f"박스 수용 판정: 서버 정책 기울임 {'켜기' if cfg['allow_tilt'] else '끄기'}, "
+                        f"여유 {cfg['margin_mm']}mm / 기울임 여유 {cfg['tilt_clearance_mm']}mm [{pol['source']}]")
     past = await mcp_call("load_context", "business", "list_past_proposals", warehouse_id=job["warehouseId"], limit=12)
     past = [x for x in past["items"] if x.get("jobId") != job["jobId"]]
     log("load_context", f"과거 제안 {len(past)}건 (에이전트 {sum(x['source'] == 'box-agent' for x in past)}건, "
@@ -333,7 +337,8 @@ async def analyze_fit(state: AgentState):
     cfg = state["config"]
     r = await mcp_call("analyze_fit", "business", "analyze_fill_rate",
                        products=state["product_fits"], box_specs=state["box_specs"],
-                       margin_mm=cfg["margin_mm"], low_fill_pct=cfg["low_fill_pct"], allow_tilt=cfg["allow_tilt"])
+                       margin_mm=cfg["margin_mm"], low_fill_pct=cfg["low_fill_pct"], allow_tilt=cfg["allow_tilt"],
+                       tilt_clearance_mm=cfg["tilt_clearance_mm"])
     log("analyze_fit", f"전체 충진율 {r['overall_fill']}% | 저충진 SKU {r['low_fill_skus']}개, "
                        f"출고 비중 {r['low_fill_qty_share']}%")
     if r["unfit"]:
@@ -385,7 +390,8 @@ async def gen_candidates(state: AgentState):
         for it in hits["items"]:
             cov = (await mcp_call("gen_candidates", "business", "coverage",
                                   products=prods, box_dims=it["dims"], margin_mm=m,
-                                  allow_tilt=cfg["allow_tilt"]))["coverage_pct"]
+                                  allow_tilt=cfg["allow_tilt"],
+                                  tilt_clearance_mm=cfg["tilt_clearance_mm"]))["coverage_pct"]
             if cov >= 80:
                 cands.append({"candId": f"{c['clusterId']}-CAT", "cluster": c["clusterId"], "type": "CATALOG",
                               "code": f"N-{it['name']}", "name": it["name"], "dims": it["dims"],
@@ -406,7 +412,8 @@ async def simulate(state: AgentState):
     r = await mcp_call("simulate", "business", "simulate_boxset",
                        products=state["product_fits"], box_specs=state["box_specs"],
                        candidates=state["candidates"], gate=state["config"]["gate"],
-                       margin_mm=state["config"]["margin_mm"], allow_tilt=state["config"]["allow_tilt"])
+                       margin_mm=state["config"]["margin_mm"], allow_tilt=state["config"]["allow_tilt"],
+                       tilt_clearance_mm=state["config"]["tilt_clearance_mm"])
     if r["combined"]:
         b, a = r["combined"]["load"]["before"], r["combined"]["load"]["after"]
         log("simulate", f"도입 효과(월 {n(b['shipments'])}건): 충진율 {b['fill']}→{a['fill']}% "
@@ -435,7 +442,8 @@ async def plan_order(state: AgentState):
                        products=state["product_fits"], box_specs=specs, new_specs=new_specs,
                        inventory=state["inventory"], forecast_shipments=state["forecast"]["forecast"],
                        days_in_month=calendar.monthrange(y, m)[1], safety_days=cfg["safety_days"],
-                       rounding_unit=cfg["rounding_unit"], margin_mm=cfg["margin_mm"], allow_tilt=cfg["allow_tilt"])
+                       rounding_unit=cfg["rounding_unit"], margin_mm=cfg["margin_mm"], allow_tilt=cfg["allow_tilt"],
+                       tilt_clearance_mm=cfg["tilt_clearance_mm"])
     for row in r["orderRows"]:
         log("plan_order", f"{row['label']:<26} 재고 {n(row['currentQty']):>6} 소모 {n(row['expectedUsage']):>6} "
                           f"안전 {n(row['safetyQty']):>5}{'*' if row['safetySource'] == 'CONFIGURED' else ' '}"
@@ -770,7 +778,7 @@ def human_review(state: AgentState):
 
 # 반려 의견으로 바꿀 수 있는 기준값(화이트리스트): key → (형, 최소, 최대)
 FEEDBACK_KEYS = {
-    "no_new_specs": (bool, None, None), "allow_tilt": (bool, None, None),
+    "no_new_specs": (bool, None, None),    # 기울임 판정은 서버 매칭 정책(chagok.matching)을 따르므로 반려로 바꾸지 않는다
     "safety_days": (int, 3, 30), "rounding_unit": (int, 50, 1000),
     "gate.CATALOG.monthly_saving": (int, 0, 5_000_000), "gate.CATALOG.share_pct": (float, 0, 50),
     "gate.CATALOG.delta_fill": (float, 0, 50),

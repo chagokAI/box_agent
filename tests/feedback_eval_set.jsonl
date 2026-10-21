@@ -3,7 +3,7 @@
 {"id": "E03", "comment": "안전재고 14일로 해주세요", "expect": {"safety_days": 14}, "expectUnsupported": false}
 {"id": "E04", "comment": "비수기라 안전 재고는 줄여도 됩니다", "expect": {"safety_days": 5}, "expectUnsupported": false}
 {"id": "E05", "comment": "월 절감 40만원은 넘어야 새 규격 등록할 가치가 있어요", "expect": {"gate.CATALOG.monthly_saving": 400000}, "expectUnsupported": false}
-{"id": "E06", "comment": "비스듬히 넣는 포장은 현장에서 안 됩니다. 그 판정은 빼 주세요", "expect": {"allow_tilt": false}, "expectUnsupported": false}
+{"id": "E06", "comment": "비스듬히 넣는 포장은 현장에서 안 됩니다. 그 판정은 빼 주세요", "expect": {}, "expectUnsupported": true}
 {"id": "E07", "comment": "공급사가 500개 단위로만 받는대요", "expect": {"rounding_unit": 500}, "expectUnsupported": false}
 {"id": "E08", "comment": "5호는 이번 발주에서 제외해 주세요", "expect": {}, "expectUnsupported": true}
 {"id": "E09", "comment": "충진율 개선이 15%p는 넘어야 바꿀 의미가 있어요", "expect": {"gate.CATALOG.delta_fill": 15}, "expectUnsupported": false}

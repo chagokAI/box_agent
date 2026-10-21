@@ -46,18 +46,19 @@ def fits_tilted(item, box):
                for p, q, r in itertools.permutations(item) for a, b, c in itertools.permutations(box))
 
 
-def fit_source(item, box, margin, allow_tilt=False):
-    """'UPRIGHT'(6방향 회전) / 'TILTED'(기울여야 들어감, allow_tilt일 때만) / None"""
+def fit_source(item, box, margin, allow_tilt=False, tilt_clearance=0):
+    """'UPRIGHT'(6방향 회전) / 'TILTED'(기울여야 들어감, allow_tilt일 때만) / None.
+    서버 FillRateCalculator 와 같은 판정: 기본 판정은 상품+margin(서버는 0), 기울임 판정은 상품+tilt_clearance"""
     it = [v + margin for v in item]
     if all(i <= b for i, b in zip(sdims(it), sdims(box))):
         return "UPRIGHT"
-    if allow_tilt and fits_tilted(it, box):
+    if allow_tilt and fits_tilted([v + tilt_clearance for v in item], box):
         return "TILTED"
     return None
 
 
-def fits(item, box, margin, allow_tilt=False):
-    return fit_source(item, box, margin, allow_tilt) is not None
+def fits(item, box, margin, allow_tilt=False, tilt_clearance=0):
+    return fit_source(item, box, margin, allow_tilt, tilt_clearance) is not None
 
 
 def ship_fee(box_dims):
@@ -65,16 +66,16 @@ def ship_fee(box_dims):
     return next((fee for cap, fee in SHIPPING_TIERS if s <= cap), 7000)
 
 
-def best_fit(item_dims, boxes, margin, allow_tilt=False):
-    ok = [b for b in boxes if fits(item_dims, b["dims"], margin, allow_tilt)]
+def best_fit(item_dims, boxes, margin, allow_tilt=False, tilt_clearance=0):
+    ok = [b for b in boxes if fits(item_dims, b["dims"], margin, allow_tilt, tilt_clearance)]
     return min(ok, key=lambda b: vol(b["dims"])) if ok else None
 
 
-def _simulate(products, boxes, margin, allow_tilt=False):
+def _simulate(products, boxes, margin, allow_tilt=False, tilt_clearance=0):
     tot_q = item_v = box_v = box_cost = ship_cost = 0
     assign = {}
     for p in products:
-        b = best_fit(p["dims"], boxes, margin, allow_tilt)
+        b = best_fit(p["dims"], boxes, margin, allow_tilt, tilt_clearance)
         q = p["qty90d"]
         assign[p["productId"]] = b["code"]
         tot_q += q
@@ -112,19 +113,19 @@ def _kmeans(x, k, iters=30, seed=0):
 # ---------------------------------------------------------------- Tools
 @mcp.tool()
 def analyze_fill_rate(products: list[dict], box_specs: list[dict], margin_mm: int = 5,
-                      low_fill_pct: float = 45, allow_tilt: bool = False) -> dict:
+                      low_fill_pct: float = 45, allow_tilt: bool = False, tilt_clearance_mm: int = 0) -> dict:
     """상품마다 들어가는 가장 작은 박스(6방향 회전, allow_tilt면 기울임 포함)를 배정하고 충진율·축별 여유를 계산한다.
     어떤 박스에도 안 들어가는 상품은 products에서 빼고 unfit으로 돌려준다."""
     out, unfit = [], []
     for p in products:
-        b = best_fit(p["dims"], box_specs, margin_mm, allow_tilt)
+        b = best_fit(p["dims"], box_specs, margin_mm, allow_tilt, tilt_clearance_mm)
         if b is None:
             unfit.append({"productId": p["productId"], "code": p.get("code"), "dims": p["dims"], "qty90d": p["qty90d"]})
             continue
         slack = [max(0, bd - pd) for bd, pd in zip(sdims(b["dims"]), sdims(p["dims"]))]
-        out.append({**p, "box": b["code"], "fill": round(100 * vol(p["dims"]) / vol(b["dims"]), 1),
-                    "slack": slack, "fit": fit_source(p["dims"], b["dims"], margin_mm, allow_tilt)})
-    base = _simulate(out, box_specs, margin_mm, allow_tilt)
+        out.append({**p, "box": b["code"], "fill": round(100 * vol(p["dims"]) / vol(b["dims"]), 2),   # 서버와 같은 둘째 자리
+                    "slack": slack, "fit": fit_source(p["dims"], b["dims"], margin_mm, allow_tilt, tilt_clearance_mm)})
+    base = _simulate(out, box_specs, margin_mm, allow_tilt, tilt_clearance_mm)
     low = [p for p in out if p["fill"] < low_fill_pct]
     tilted = [{"productId": p["productId"], "code": p.get("code"), "dims": p["dims"], "box": p["box"],
                "qty90d": p["qty90d"]} for p in out if p["fit"] == "TILTED"]
@@ -204,24 +205,25 @@ def ideal_box_dims(p90_dims: list[int], margin_mm: int = 5, round_to_mm: int = 5
 
 
 @mcp.tool()
-def coverage(products: list[dict], box_dims: list[int], margin_mm: int = 5, allow_tilt: bool = False) -> dict:
+def coverage(products: list[dict], box_dims: list[int], margin_mm: int = 5, allow_tilt: bool = False,
+             tilt_clearance_mm: int = 0) -> dict:
     """주어진 박스에 들어가는 상품의 출고량 비율(%)."""
     tot = sum(p["qty90d"] for p in products)
-    ok = sum(p["qty90d"] for p in products if fits(p["dims"], box_dims, margin_mm, allow_tilt))
+    ok = sum(p["qty90d"] for p in products if fits(p["dims"], box_dims, margin_mm, allow_tilt, tilt_clearance_mm))
     return {"coverage_pct": round(100 * ok / tot, 1) if tot else 0.0}
 
 
 @mcp.tool()
 def simulate_boxset(products: list[dict], box_specs: list[dict], candidates: list[dict], gate: dict,
-                    margin_mm: int = 5, allow_tilt: bool = False) -> dict:
+                    margin_mm: int = 5, allow_tilt: bool = False, tilt_clearance_mm: int = 0) -> dict:
     """후보 박스를 하나씩 추가해 과거 출고를 재배정하고 충진율 변화·월 절감·회수기간·게이트 판정을 계산한다.
     게이트를 통과한 후보 중 군집당 월 절감액이 가장 큰 1개를 선정한다.
     combined.load = 선정 규격을 모두 넣었을 때 배정이 바뀌는 출고의 도입 전/후 월 적재량(_load)."""
-    base = _simulate(products, box_specs, margin_mm, allow_tilt)
+    base = _simulate(products, box_specs, margin_mm, allow_tilt, tilt_clearance_mm)
     res = []
     for c in candidates:
         new = _simulate(products, box_specs + [{"code": c["code"], "dims": c["dims"], "price": c["price"]}],
-                        margin_mm, allow_tilt)
+                        margin_mm, allow_tilt, tilt_clearance_mm)
         moved = [p for p in products if new["assign"][p["productId"]] == c["code"]]
         mq = sum(p["qty90d"] for p in moved)
         if mq == 0:
@@ -254,7 +256,7 @@ def simulate_boxset(products: list[dict], box_specs: list[dict], candidates: lis
     combined = None
     if sel:
         comb = _simulate(products, box_specs + [{"code": r["code"], "dims": r["dims"], "price": r["price"]}
-                                                for r in sel], margin_mm, allow_tilt)
+                                                for r in sel], margin_mm, allow_tilt, tilt_clearance_mm)
         boxes = box_specs + [{"code": r["code"], "dims": r["dims"], "price": r["price"]} for r in sel]
         moved = [p for p in products if comb["assign"][p["productId"]] != base["assign"][p["productId"]]]
         combined = {"overall_fill_before": round(base["fill"], 1), "overall_fill_after": round(comb["fill"], 1),
@@ -268,13 +270,14 @@ def simulate_boxset(products: list[dict], box_specs: list[dict], candidates: lis
 @mcp.tool()
 def plan_order(products: list[dict], box_specs: list[dict], new_specs: list[dict], inventory: list[dict],
                forecast_shipments: int, days_in_month: int, safety_days: int = 7, rounding_unit: int = 100,
-               margin_mm: int = 5, use_configured_safety: bool = True, allow_tilt: bool = False) -> dict:
+               margin_mm: int = 5, use_configured_safety: bool = True, allow_tilt: bool = False,
+               tilt_clearance_mm: int = 0) -> dict:
     """신규 규격을 포함한 박스 세트로 상품을 재배정해 규격별 사용 비중을 구하고,
     다음 달 예상 소모 = 예측 출고 × 비중,
     안전 재고 = inventory의 safetyQty(규격에 설정된 값, use_configured_safety) 또는 일평균 소모 × safety_days,
     제안 수량 = 예상 소모 + 안전 재고 − 현재 재고 (rounding_unit 단위 반올림, 0 이하면 0)."""
     boxes = box_specs + new_specs
-    sim = _simulate(products, boxes, margin_mm, allow_tilt)
+    sim = _simulate(products, boxes, margin_mm, allow_tilt, tilt_clearance_mm)
     qty_by = {}
     for p in products:
         c = sim["assign"][p["productId"]]
