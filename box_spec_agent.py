@@ -420,6 +420,7 @@ async def gen_candidates(state: AgentState):
             if not q["ok"]:
                 notes.append(f"{c['clusterId']} {c.get('name') or cats(c)} 구간: 기성품 후보 없음, {q['note']}")
                 continue
+            ideal = q["dims"]                    # 최소 제작 크기로 올린 치수
             cov = (await mcp_call("gen_candidates", "business", "coverage", products=prods, box_dims=ideal,
                                   margin_mm=m, allow_tilt=cfg["allow_tilt"],
                                   tilt_clearance_mm=cfg["tilt_clearance_mm"]))["coverage_pct"]
@@ -442,6 +443,7 @@ async def gen_candidates(state: AgentState):
         dims = (await mcp_call("gen_candidates", "business", "ideal_box_dims", p90_dims=need, margin_mm=m))["dims"]
         q = await _quote_custom("gen_candidates", dims, sum(p["qty90d"] for p in u))
         if q["ok"]:
+            dims = q["dims"]
             unfit = {"code": f"N-맞춤 {dims_s(dims)}", "name": f"맞춤 {dims_s(dims)}", "dims": dims,
                      "price": q["unitPrice"], "init_cost": q["initCost"], "quote": q,
                      "products": [p["code"] or p["productId"] for p in u], "qty90d": sum(p["qty90d"] for p in u)}
@@ -452,9 +454,15 @@ async def gen_candidates(state: AgentState):
     return {"candidates": cands, "custom_unfit": unfit, "custom_notes": notes, "messages": ["gen_candidates"]}
 
 
+UPACKAGE_MIN_MM = (0, 80, 50)                # 유팩 견적 계산기 거절 메시지 기준(세로 80mm, 높이 50mm 미만 제작 불가)
+
+
 async def _quote_custom(node: str, dims: list[int], qty90d: int) -> dict:
-    """월 출고량(90일 ÷ 3, 100개 단위 올림)으로 유팩 맞춤 제작 참고 견적"""
+    """월 출고량(90일 ÷ 3, 100개 단위 올림)으로 유팩 맞춤 제작 참고 견적.
+    유팩 A형 최소 제작 크기(세로 80mm, 높이 50mm)보다 작으면 그 크기까지 올려서 묻는다 → 후보 치수는 q["dims"]"""
     qty = max(100, -(-qty90d // 3 // 100) * 100)
+    d = sorted(dims, reverse=True)
+    dims = [d[0], max(d[1], UPACKAGE_MIN_MM[1]), max(d[2], UPACKAGE_MIN_MM[2])]
     q = await mcp_call(node, "business", "quote_custom_box", dims=dims, qty=qty)
     log(node, f"맞춤 견적 {dims_s(dims)} × {n(qty)}개: " + (f"{n(q['unitPrice'])}원/개, 초기비 {n(q['initCost'])}원, "
                                                           f"납기 {q['leadDate']}" if q["ok"] else q["note"]))
