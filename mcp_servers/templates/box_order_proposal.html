@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{title}}</title>
+<!-- 박스 주문 제안서 HTML 양식 (2026-10-23 확정, 'A 임원 보고형').
+     중괄호 2개 자리표시자 = 글자(자동 이스케이프), 중괄호 3개 = proposal_server.render_proposal_html 이 만든 HTML 조각.
+     client 브랜드 토큰(src/assets/main.css): navy #202a38 · gold #dda632 · cream #fdf5ec · card-border #f0dfc9 · divider #f1eae1
+     차트 시리즈는 navy·gold 계열에서 색각 검사를 통과하는 단계로 조정: 박스비 #2e528f, 운임 #b8862a -->
+<style>
+:root{
+  color-scheme:light;
+  --bg:#ffffff;--surface:#ffffff;--line:#f0dfc9;--divider:#f1eae1;--grid:#f1eae1;
+  --text:#202a38;--text2:#4b5565;--muted:#98a2b3;
+  --s1:#2e528f;--s2:#b8862a;--accent:#dda632;--good:#1f7a46;--chip-bg:#faeeda;--chip-text:#603c22;
+  --hero-bg:#202a38;--hero-text:#ffffff;--hero-mark:#dda632;--cream:#fdf5ec;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  color-scheme:dark;--bg:#14181f;--surface:#1c222c;--line:#343b47;--divider:#2a313c;--grid:#2a313c;
+  --text:#eef0f3;--text2:#c2c8d2;--muted:#8a93a3;--s1:#5c84c8;--s2:#b88a35;--accent:#dda632;--good:#4cbb7b;
+  --chip-bg:#3a2d1a;--chip-text:#f0c870;--hero-bg:#0f131a;--hero-text:#ffffff;--hero-mark:#dda632;--cream:#252b35;}}
+:root[data-theme="dark"]{color-scheme:dark;--bg:#14181f;--surface:#1c222c;--line:#343b47;--divider:#2a313c;--grid:#2a313c;
+  --text:#eef0f3;--text2:#c2c8d2;--muted:#8a93a3;--s1:#5c84c8;--s2:#b88a35;--accent:#dda632;--good:#4cbb7b;
+  --chip-bg:#3a2d1a;--chip-text:#f0c870;--hero-bg:#0f131a;--hero-text:#ffffff;--hero-mark:#dda632;--cream:#252b35;}
+*{box-sizing:border-box;margin:0}
+body{background:var(--bg);color:var(--text);font:14px/1.55 "Pretendard",-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Noto Sans KR","Malgun Gothic",sans-serif;padding:24px 16px}
+.page{max-width:880px;margin:0 auto;background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:0 1px 2px rgb(32 42 56 / 4%)}
+.top{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;padding:16px 28px;background:var(--cream);border-bottom:1px solid var(--line);font-size:12px;color:var(--text2)}
+.tag{background:var(--hero-bg);color:#fff;border-radius:999px;padding:2px 10px;font-weight:600;font-size:11px;margin-right:8px}
+.hero{background:var(--hero-bg);color:var(--hero-text);padding:34px 28px}
+.hero .k{font-size:12px;letter-spacing:.12em;color:var(--hero-mark);font-weight:600;margin-bottom:12px}
+.sum{list-style:none;padding:0;display:grid;gap:14px}
+.sum li{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;padding-bottom:14px;border-bottom:1px solid color-mix(in srgb,var(--hero-text) 18%,transparent)}
+.sum li:last-child{border-bottom:none;padding-bottom:0}
+.sum span{font-size:15px;opacity:.75;min-width:190px}
+.sum strong{font-size:28px;font-weight:800;letter-spacing:-.01em;font-variant-numeric:tabular-nums;border-bottom:3px solid var(--hero-mark)}
+.sum em{font-style:normal;font-size:14px;opacity:.7}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);border-bottom:1px solid var(--line);background:var(--surface)}
+.kpi{padding:18px 22px;border-right:1px solid var(--line)}.kpi:last-child{border-right:none}
+.kpi .l{font-size:12px;color:var(--text2)}.kpi .v{font-size:22px;font-weight:700;margin-top:4px;font-variant-numeric:tabular-nums}
+.kpi .s{font-size:12px;color:var(--muted)}.kpi .s.up{color:var(--good);font-weight:600}
+section{padding:26px 28px;border-bottom:1px solid var(--divider)}
+h2{font-size:16px;margin-bottom:14px;padding-left:10px;border-left:3px solid var(--accent);line-height:1.3}
+h2 small{font-weight:400;color:var(--muted);font-size:12px;margin-left:6px}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+th,td{padding:9px 8px;border-bottom:1px solid var(--divider);text-align:right}
+th{font-size:12px;color:var(--text2);font-weight:600}
+th:first-child,td:first-child{text-align:left}
+tr.total td{font-weight:700;border-bottom:none}
+.new{font-size:11px;color:var(--chip-text);background:var(--chip-bg);border-radius:999px;padding:1px 8px;margin-left:6px;font-weight:600}
+.two{display:grid;grid-template-columns:1.2fr 1fr;gap:24px;align-items:start}
+.legend{display:flex;gap:14px;font-size:12px;color:var(--text2);margin-bottom:6px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+.delta{display:flex;flex-direction:column;gap:10px}
+.drow{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid var(--divider);padding-bottom:8px}
+.drow b{font-variant-numeric:tabular-nums;text-align:right}.drow .g{color:var(--good)}
+.note{font-size:12px;color:var(--muted);margin-top:10px}
+.amount{font-size:30px;font-weight:800;font-variant-numeric:tabular-nums;display:inline-block;border-bottom:3px solid var(--accent)}
+details{padding:18px 28px;background:var(--cream)}
+summary{cursor:pointer;font-weight:600;color:var(--text2)}summary::marker{color:var(--accent)}
+details ul{margin:12px 0 0 18px;color:var(--text2)}details li{margin:6px 0}
+details h3{font-size:13px;margin:16px 0 4px}
+.tip{position:fixed;pointer-events:none;background:var(--text);color:var(--surface);font-size:12px;padding:6px 9px;border-radius:6px;opacity:0;transition:opacity .1s;white-space:nowrap;z-index:9}
+svg text{font:11px -apple-system,"Apple SD Gothic Neo",sans-serif;fill:var(--text2)}
+@media (max-width:640px){.kpis{grid-template-columns:1fr 1fr}.kpi:nth-child(2){border-right:none}.two{grid-template-columns:1fr}.sum span{min-width:0;width:100%}.sum strong{font-size:23px}}
+@media print{body{padding:0}.page{border:none;box-shadow:none}details>*{display:block}}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="top"><div><span class="tag">AI 생성</span>{{warehouseName}} · 박스 주문 제안서</div><div>발주 대상 {{periodStart}} – {{periodEnd}}</div></div>
+
+  <div class="hero">
+    <div class="k">요약</div>
+    <ul class="sum">
+      <li><span>{{targetMonthLabel}} 박스 주문 개수</span><strong>{{orderCountText}}</strong></li>
+      <li><span>박스 주문금액</span><strong>{{totalAmount}}</strong><em>VAT 별도</em></li>
+      <li><span>이를 통한 예상 이익</span><strong>{{profitMonthly}}</strong><em>{{profitNote}}</em></li>
+    </ul>
+  </div>
+
+  <div class="kpis">{{{kpis}}}</div>
+
+  <section>
+    <h2>규격별 제안 수량</h2>
+    <table>
+      <tr><th>규격</th><th>현재 재고</th><th>예상 소모</th><th>안전 재고</th><th>제안 수량</th></tr>
+      {{{specRows}}}
+    </table>
+    {{{skippedNote}}}
+  </section>
+
+  <section>
+    {{{effectSection}}}
+  </section>
+
+  <section>
+    <h2>예상 총 주문금액</h2>
+    <div class="two">
+      <div><div class="amount">{{totalAmount}}</div><div class="note">VAT 별도 · 운임 미포함</div></div>
+      <svg id="amtChart" viewBox="0 0 360 {{amtChartHeight}}" width="100%" role="img" aria-label="규격별 주문 금액"></svg>
+    </div>
+  </section>
+
+  <details>
+    <summary>상세보기</summary>
+    {{{details}}}
+  </details>
+</div>
+<div class="tip" id="tip"></div>
+<script id="chart-data" type="application/json">{{{chartData}}}</script>
+<script>
+const D=JSON.parse(document.getElementById('chart-data').textContent);
+const tip=document.getElementById('tip'),won=n=>n.toLocaleString('ko-KR')+'원',NS='http://www.w3.org/2000/svg';
+function el(t,a,p){const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);p&&p.appendChild(e);return e}
+function hover(e,html){e.addEventListener('mousemove',v=>{tip.innerHTML=html;tip.style.opacity=1;tip.style.left=v.clientX+12+'px';tip.style.top=v.clientY+12+'px'});e.addEventListener('mouseleave',()=>tip.style.opacity=0)}
+// 도입 전/후 월 박스비·운임 누적 막대
+(function(){const s=document.getElementById('costChart');if(!s||!D.cost)return;const data=D.cost,
+ max=Math.max(...data.map(d=>d[1]+d[2]))*1.12,H=190,top=10,x0=60,step=max>4e6?2e6:max>1e6?5e5:1e5;
+ for(let v=0;v<max;v+=step){const y=top+H-v/max*H;el('line',{x1:x0,x2:430,y1:y,y2:y,stroke:'var(--grid)'},s);el('text',{x:x0-8,y:y+4,'text-anchor':'end'},s).textContent=v/1e4+'만'}
+ data.forEach(([n,b,f],i)=>{const x=x0+40+i*170,w=90,hb=b/max*H,hf=f/max*H,yb=top+H-hb,yf=yb-hf-2;
+  const rb=el('rect',{x,y:yb,width:w,height:hb,fill:'var(--s1)',rx:2},s);hover(rb,`${n}<br>박스비 ${won(b)}`);
+  const rf=el('path',{d:`M${x},${yf+hf} v${-hf+4} q0,-4 4,-4 h${w-8} q4,0 4,4 v${hf-4} z`,fill:'var(--s2)'},s);hover(rf,`${n}<br>운임 ${won(f)}`);
+  el('text',{x:x+w/2,y:yf-6,'text-anchor':'middle',style:'fill:var(--text);font-weight:600'},s).textContent=won(b+f);
+  el('text',{x:x+w/2,y:top+H+16,'text-anchor':'middle'},s).textContent=n});
+})();
+// 규격별 금액 가로 막대
+(function(){const s=document.getElementById('amtChart');if(!s||!D.amounts||!D.amounts.length)return;const d=D.amounts,max=Math.max(...d.map(x=>x[1]));
+ d.forEach(([n,v],i)=>{const y=8+i*40,w=Math.max(6,v/max*200);el('text',{x:0,y:y+15},s).textContent=n.length>14?n.slice(0,13)+'…':n;
+  const r=el('path',{d:`M110,${y} h${w-4} q4,0 4,4 v14 q0,4 -4,4 h${-w+4} z`,fill:'var(--s1)'},s);hover(r,`${n} ${won(v)}`);
+  el('text',{x:110+w+6,y:y+15,style:'fill:var(--text)'},s).textContent=won(v)});
+})();
+</script>
+</body>
+</html>

@@ -312,6 +312,30 @@ def simulate_boxset(products: list[dict], box_specs: list[dict], candidates: lis
 
 
 @mcp.tool()
+def compare_boxsets(products: list[dict], before_specs: list[dict], after_specs: list[dict], margin_mm: int = 5,
+                    allow_tilt: bool = False, tilt_clearance_mm: int = 0) -> dict:
+    """박스 세트 두 개(before → after)로 같은 출고를 배정해 비교한다. simulate_boxset 의 combined 와 같은 모양.
+    load = 두 세트 모두에 들어가는데 배정이 바뀌는 출고의 월 적재량(전/후),
+    newly_fit = before 에는 안 들어가고 after 에만 들어가는 출고의 월 적재량(after 기준, 맞춤 규격 효과용)."""
+    def fit_all(specs):
+        return [p for p in products if best_fit(p["dims"], specs, margin_mm, allow_tilt, tilt_clearance_mm)]
+    both = [p for p in fit_all(after_specs) if best_fit(p["dims"], before_specs, margin_mm, allow_tilt, tilt_clearance_mm)]
+    only_after = [p for p in fit_all(after_specs) if p not in both]
+    base = _simulate(both, before_specs, margin_mm, allow_tilt, tilt_clearance_mm) if both else None
+    new = _simulate(both + only_after, after_specs, margin_mm, allow_tilt, tilt_clearance_mm)
+    moved = [p for p in both if base and new["assign"][p["productId"]] != base["assign"][p["productId"]]]
+    boxes = {b["code"]: b for b in before_specs + after_specs}.values()
+    boxes = list(boxes)
+    return {"overall_fill_before": round(base["fill"], 1) if base else None,
+            "overall_fill_after": round(_simulate(both, after_specs, margin_mm, allow_tilt, tilt_clearance_mm)["fill"], 1)
+            if both else None,
+            "load": {"before": _load(moved, base["assign"], boxes), "after": _load(moved, new["assign"], boxes),
+                     "fromBoxes": sorted({base["assign"][p["productId"]] for p in moved})} if moved else None,
+            "newly_fit": {**_load(only_after, new["assign"], boxes),
+                          "toBoxes": sorted({new["assign"][p["productId"]] for p in only_after})} if only_after else None}
+
+
+@mcp.tool()
 def plan_order(products: list[dict], box_specs: list[dict], new_specs: list[dict], inventory: list[dict],
                forecast_shipments: int, days_in_month: int, safety_days: int = 7, rounding_unit: int = 100,
                margin_mm: int = 5, use_configured_safety: bool = True, allow_tilt: bool = False,
