@@ -411,14 +411,40 @@ def compare_boxsets(products: list[dict], before_specs: list[dict], after_specs:
 
 
 @mcp.tool()
+def check_spec_limit(products: list[dict], box_specs: list[dict], new_specs: list[dict], max_active: int,
+                     deactivate_below_pct: float, margin_mm: int = 5, allow_tilt: bool = False,
+                     tilt_clearance_mm: int = 0) -> dict:
+    """활성 규격 수 상한(POL-02 §3). 기존 + 신규로 출고를 다시 배정한 뒤 규격별 사용 비중을 내고,
+    상한을 넘으면 사용 비중 deactivate_below_pct 미만인 기존 규격을 낮은 순으로 비활성화 후보로,
+    그래도 넘으면 신규 규격을 우선순위(priority, 큰 값이 먼저 유지) 낮은 순으로 제외 후보로 돌려준다."""
+    boxes = box_specs + new_specs
+    sim = _simulate(products, boxes, margin_mm, allow_tilt, tilt_clearance_mm)
+    q = {}
+    for p in products:
+        q[sim["assign"][p["productId"]]] = q.get(sim["assign"][p["productId"]], 0) + p["qty90d"]
+    tot = sum(q.values()) or 1
+    share = {b["code"]: round(100 * q.get(b["code"], 0) / tot, 1) for b in boxes}
+    over = len(boxes) - max_active
+    low = sorted((b for b in box_specs if share[b["code"]] < deactivate_below_pct), key=lambda b: share[b["code"]])
+    deactivate = [{"code": b["code"], "share_pct": share[b["code"]]} for b in low[:max(over, 0)]]
+    left = over - len(deactivate)
+    drop = [b["code"] for b in sorted(new_specs, key=lambda b: b.get("priority", 0))[:max(left, 0)]]
+    return {"count_before": len(box_specs), "count_after": len(boxes) - len(deactivate) - len(drop),
+            "count_proposed": len(boxes), "max_active": max_active, "over": max(over, 0), "share_pct": share,
+            "low_usage": [{"code": b["code"], "share_pct": share[b["code"]]} for b in low],
+            "deactivate": deactivate, "drop": drop}
+
+
+@mcp.tool()
 def plan_order(products: list[dict], box_specs: list[dict], new_specs: list[dict], inventory: list[dict],
                forecast_shipments: int, days_in_month: int, safety_days: int = 7, rounding_unit: int = 100,
                margin_mm: int = 5, use_configured_safety: bool = True, allow_tilt: bool = False,
-               tilt_clearance_mm: int = 0) -> dict:
+               tilt_clearance_mm: int = 0, max_stock_months: float | None = None) -> dict:
     """신규 규격을 포함한 박스 세트로 상품을 재배정해 규격별 사용 비중을 구하고,
     다음 달 예상 소모 = 예측 출고 × 비중,
     안전 재고 = inventory의 safetyQty(규격에 설정된 값, use_configured_safety) 또는 일평균 소모 × safety_days,
-    제안 수량 = 예상 소모 + 안전 재고 − 현재 재고 (rounding_unit 단위 반올림, 0 이하면 0)."""
+    제안 수량 = 예상 소모 + 안전 재고 − 현재 재고 (rounding_unit 단위 반올림, 0 이하면 0).
+    max_stock_months 가 있으면 재고(현재 + 제안)가 예상 소모 × max_stock_months 를 넘는 규격에 overStock 표시(POL-04 §2)."""
     boxes = box_specs + new_specs
     sim = _simulate(products, boxes, margin_mm, allow_tilt, tilt_clearance_mm)
     qty_by = {}
@@ -446,7 +472,9 @@ def plan_order(products: list[dict], box_specs: list[dict], new_specs: list[dict
         rows.append({"code": b["code"], "label": b.get("label", b["code"]), "dims": b["dims"],
                      "isNew": b["code"] in new_codes, "sharePct": round(100 * share, 1), "currentQty": cur,
                      "expectedUsage": usage, "safetyQty": safety, "safetySource": src, "proposedQty": qty,
-                     "unitPrice": b["price"], "amount": qty * b["price"]})
+                     "unitPrice": b["price"], "amount": qty * b["price"],
+                     "stockCap": round(usage * max_stock_months) if max_stock_months else None,
+                     "overStock": bool(max_stock_months and usage and cur + qty > usage * max_stock_months)})
     rows.sort(key=lambda r: (not r["isNew"], -r["proposedQty"]))
     order_rows = [r for r in rows if r["proposedQty"] > 0]
     o = order_rows   # 표·합계는 주문이 필요한 규격 기준
