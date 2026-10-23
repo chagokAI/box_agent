@@ -311,7 +311,9 @@ def coverage(products: list[dict], box_dims: list[int], margin_mm: int = 5, allo
 def simulate_boxset(products: list[dict], box_specs: list[dict], candidates: list[dict], gate: dict,
                     margin_mm: int = 5, allow_tilt: bool = False, tilt_clearance_mm: int = 0) -> dict:
     """후보 박스를 하나씩 추가해 과거 출고를 재배정하고 충진율 변화·월 절감·회수기간·게이트 판정을 계산한다.
-    게이트를 통과한 후보 중 군집당 월 절감액이 가장 큰 1개를 선정한다.
+    게이트를 통과한 후보 중 군집당 월 절감액이 가장 큰 1개를 선정한다(겹치면 추가 절감 기준, marginal_saving).
+    moved = 그 후보로 옮겨 가는 상품별 이전 박스·충진율 전후(anchor = 후보를 만든 군집·단일 품목의 상품).
+    combined.monthly_saving = 선정 규격을 모두 넣었을 때의 월 절감 — 제안서의 예상 이익은 이 값 하나만 쓴다.
     combined.load = 선정 규격을 모두 넣었을 때 배정이 바뀌는 출고의 도입 전/후 월 적재량(_load)."""
     base = _simulate(products, box_specs, margin_mm, allow_tilt, tilt_clearance_mm)
     res = []
@@ -336,8 +338,14 @@ def simulate_boxset(products: list[dict], box_specs: list[dict], candidates: lis
             checks.pop("share_pct")
         if "payback_m" in g:
             checks["payback_m"] = payback is not None and payback <= g["payback_m"]
+        anchor = set(c.get("productIds") or [])
+        moved_rows = sorted(({"productId": p["productId"], "name": p.get("name") or p.get("code"), "qty90d": p["qty90d"],
+                              "from": base["assign"][p["productId"]], "anchor": p["productId"] in anchor,
+                              "fill_before": round(100 * vol(p["dims"]) / vol(spec[base["assign"][p["productId"]]]["dims"]), 1),
+                              "fill_after": round(100 * vol(p["dims"]) / vol(c["dims"]), 1)} for p in moved),
+                            key=lambda r: (not r["anchor"], -r["qty90d"]))
         res.append({"candId": c["candId"], "cluster": c["cluster"], "type": c["type"], "scope": c.get("scope", "CLUSTER"),
-                    "code": c["code"],
+                    "code": c["code"], "moved": moved_rows,
                     "dims": c["dims"], "price": c["price"], "target_share_pct": share,
                     "target_fill_before": round(b_fill, 1), "target_fill_after": round(a_fill, 1),
                     "overall_fill_before": round(base["fill"], 1), "overall_fill_after": round(new["fill"], 1),
@@ -390,7 +398,10 @@ def compare_boxsets(products: list[dict], before_specs: list[dict], after_specs:
     moved = [p for p in both if base and new["assign"][p["productId"]] != base["assign"][p["productId"]]]
     boxes = {b["code"]: b for b in before_specs + after_specs}.values()
     boxes = list(boxes)
-    return {"overall_fill_before": round(base["fill"], 1) if base else None,
+    after_both = _simulate(both, after_specs, margin_mm, allow_tilt, tilt_clearance_mm) if both else None
+    return {"monthly_saving": round(((base["box_cost"] + base["ship_cost"]) - (after_both["box_cost"] + after_both["ship_cost"])) / 3)
+            if base else 0,
+            "overall_fill_before": round(base["fill"], 1) if base else None,
             "overall_fill_after": round(_simulate(both, after_specs, margin_mm, allow_tilt, tilt_clearance_mm)["fill"], 1)
             if both else None,
             "load": {"before": _load(moved, base["assign"], boxes), "after": _load(moved, new["assign"], boxes),
