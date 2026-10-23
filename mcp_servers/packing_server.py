@@ -144,6 +144,18 @@ def _load(products, assign, boxes):
             "fill": round(100 * item_v / box_v, 1) if box_v else None}
 
 
+def _reg_fill(products, assign, boxes, limit_mm=500):
+    """포장 규제 대상(박스 세 변 합 > limit_mm, 포장 규칙 별표 1 비고 11) 출고의 출고량 가중 평균 충진율(%)"""
+    spec = {b["code"]: b for b in boxes}
+    q = f = 0
+    for p in products:
+        b = spec.get(assign.get(p["productId"]))
+        if b and sum(b["dims"]) > limit_mm:
+            q += p["qty90d"]
+            f += p["qty90d"] * 100 * vol(p["dims"]) / vol(b["dims"])
+    return round(f / q, 1) if q else 0.0
+
+
 def _kmeans(x, k, w=None, iters=30, seeds=10):
     """출고량 가중 k-means. 시작점을 seeds 번 바꿔 가중 제곱오차가 가장 작은 결과를 쓴다"""
     w = np.ones(len(x)) if w is None else np.asarray(w, float)
@@ -309,13 +321,18 @@ def coverage(products: list[dict], box_dims: list[int], margin_mm: int = 5, allo
 
 @mcp.tool()
 def simulate_boxset(products: list[dict], box_specs: list[dict], candidates: list[dict], gate: dict,
-                    margin_mm: int = 5, allow_tilt: bool = False, tilt_clearance_mm: int = 0) -> dict:
+                    margin_mm: int = 5, allow_tilt: bool = False, tilt_clearance_mm: int = 0,
+                    fill_mode: dict | None = None) -> dict:
     """후보 박스를 하나씩 추가해 과거 출고를 재배정하고 충진율 변화·월 절감·회수기간·게이트 판정을 계산한다.
     게이트를 통과한 후보 중 군집당 월 절감액이 가장 큰 1개를 선정한다(겹치면 추가 절감 기준, marginal_saving).
     moved = 그 후보로 옮겨 가는 상품별 이전 박스·충진율 전후(anchor = 후보를 만든 군집·단일 품목의 상품).
     combined.monthly_saving = 선정 규격을 모두 넣었을 때의 월 절감 — 제안서의 예상 이익은 이 값 하나만 쓴다.
-    combined.load = 선정 규격을 모두 넣었을 때 배정이 바뀌는 출고의 도입 전/후 월 적재량(_load)."""
+    combined.load = 선정 규격을 모두 넣었을 때 배정이 바뀌는 출고의 도입 전/후 월 적재량(_load).
+    reg_fill_* = 포장 규제 대상(세 변 합 50cm 초과) 출고의 센터 전체 충진율.
+    fill_mode = {"min_gain": %p, "max_extra_cost": 원} 이면 충진율 목표 모드: 절감 게이트를 못 넘어도 규제 대상 충진율을
+    min_gain 이상 올리고 월 추가 비용(누적)이 max_extra_cost 안이면 선정(pass_by = "FILL"). 절감 통과 후보를 먼저 고른다."""
     base = _simulate(products, box_specs, margin_mm, allow_tilt, tilt_clearance_mm)
+    base_reg = _reg_fill(products, base["assign"], box_specs)
     res = []
     for c in candidates:
         new = _simulate(products, box_specs + [{"code": c["code"], "dims": c["dims"], "price": c["price"]}],
@@ -338,6 +355,9 @@ def simulate_boxset(products: list[dict], box_specs: list[dict], candidates: lis
             checks.pop("share_pct")
         if "payback_m" in g:
             checks["payback_m"] = payback is not None and payback <= g["payback_m"]
+        reg_a = _reg_fill(products, new["assign"], box_specs + [{"code": c["code"], "dims": c["dims"]}])
+        pass_by = "SAVING" if all(checks.values()) else (
+            "FILL" if fill_mode and reg_a - base_reg >= fill_mode["min_gain"] and monthly >= -fill_mode["max_extra_cost"] else None)
         anchor = set(c.get("productIds") or [])
         moved_rows = sorted(({"productId": p["productId"], "name": p.get("name") or p.get("code"), "qty90d": p["qty90d"],
                               "from": base["assign"][p["productId"]], "anchor": p["productId"] in anchor,
@@ -351,11 +371,12 @@ def simulate_boxset(products: list[dict], box_specs: list[dict], candidates: lis
                     "overall_fill_before": round(base["fill"], 1), "overall_fill_after": round(new["fill"], 1),
                     "monthly_saving": monthly, "init_cost": c["init_cost"], "payback_m": payback,
                     "replaces": sorted({base["assign"][p["productId"]] for p in moved}),
-                    "checks": checks, "pass": all(checks.values()), "selected": False})
+                    "reg_fill_before": base_reg, "reg_fill_after": reg_a,
+                    "checks": checks, "pass": pass_by is not None, "pass_by": pass_by, "selected": False})
     # 군집·단일 후보는 같은 출고를 두고 겹칠 수 있다 → 절감이 큰 순으로 넣으며 '이미 고른 것 위에 더 줄어드는 만큼'으로 다시 판정
     chosen, cur = [], base
     cand_by = {c["candId"]: c for c in candidates}
-    for r in sorted([r for r in res if r["pass"]], key=lambda r: -r["monthly_saving"]):
+    for r in sorted([r for r in res if r["pass_by"] == "SAVING"], key=lambda r: -r["monthly_saving"]):
         if any(x["cluster"] == r["cluster"] for x in chosen):
             continue                                   # 군집(단일)당 1개
         trial = _simulate(products, box_specs + [{"code": x["code"], "dims": x["dims"], "price": x["price"]}
@@ -368,6 +389,20 @@ def simulate_boxset(products: list[dict], box_specs: list[dict], candidates: lis
             r["selected"] = True
             chosen.append(r)
             cur = trial
+    if fill_mode:                                      # 충진율 목표 모드: 규제 대상 충진율을 가장 많이 올리는 후보부터, 추가 비용 한도 안에서
+        extra = 0
+        for r in sorted([r for r in res if r["pass_by"] == "FILL"], key=lambda r: -(r["reg_fill_after"] - r["reg_fill_before"])):
+            if any(x["cluster"] == r["cluster"] for x in chosen):
+                continue
+            boxes = box_specs + [{"code": x["code"], "dims": x["dims"], "price": x["price"]} for x in chosen + [r]]
+            trial = _simulate(products, boxes, margin_mm, allow_tilt, tilt_clearance_mm)
+            marginal = round(((cur["box_cost"] + cur["ship_cost"]) - (trial["box_cost"] + trial["ship_cost"])) / 3)
+            gain = _reg_fill(products, trial["assign"], boxes) - _reg_fill(products, cur["assign"], boxes)
+            r["marginal_saving"], r["marginal_reg_gain"] = marginal, round(gain, 1)
+            if gain >= fill_mode["min_gain"] and extra + max(0, -marginal) <= fill_mode["max_extra_cost"]:
+                r["selected"] = True
+                chosen.append(r)
+                cur, extra = trial, extra + max(0, -marginal)
     sel = [r for r in res if r["selected"]]
     combined = None
     if sel:
@@ -376,6 +411,7 @@ def simulate_boxset(products: list[dict], box_specs: list[dict], candidates: lis
         boxes = box_specs + [{"code": r["code"], "dims": r["dims"], "price": r["price"]} for r in sel]
         moved = [p for p in products if comb["assign"][p["productId"]] != base["assign"][p["productId"]]]
         combined = {"overall_fill_before": round(base["fill"], 1), "overall_fill_after": round(comb["fill"], 1),
+                    "reg_fill_before": base_reg, "reg_fill_after": _reg_fill(products, comb["assign"], boxes),
                     "monthly_saving": round(((base["box_cost"] + base["ship_cost"])
                                              - (comb["box_cost"] + comb["ship_cost"])) / 3),
                     "load": {"before": _load(moved, base["assign"], boxes), "after": _load(moved, comb["assign"], boxes),
