@@ -227,6 +227,10 @@ BOXKING_BASE_URL=http://127.0.0.1:8765 BOXKING_MIN_DELAY=0 CATALOG_DB=test.db py
 - 표 문구("부피 및 무게 운임 중 높은 금액")를 소화물에도 그대로 적용하면 무게표 최저 4,500원 때문에 소화물 3,000~4,000원 구간이
   쓰이지 않는다 → 운영 판단(2026-10-22)으로 소화물은 부피 운임 우선. 문구 그대로 계산은 `FREIGHT_MODE=max`
 - 쓰는 곳: `simulate_boxset` 월 절감(박스비 + 운임) → 신규 규격 게이트, 제안서 '신규 규격 도입 효과'의 `월 운임`·`월 박스비 + 운임` 줄과
+- 도입 효과 표 블록: ① 이번에 선정한 신규 규격, 선정이 없으면 ② 서버가 승인 제안으로 등록한 규격(`description` = `catalog:boxking:<품번>`)이
+  없었을 때 대비 지금 효과(`compare_boxsets`), ③ 안 들어가는 상품용 맞춤 규격(포장 불가 → 맞춤 박스, 박스비는 2차 견적 단가). 둘 이상이면 행에 `[규격]`
+- 저장 시 맞춤 규격 줄은 `lines[].type = CUSTOM_SPEC` — 서버(`AgentProposalItemService`)는 `NEW_SPEC` 줄만 박스왕 카탈로그 근거로
+  box_spec 에 등록·발주하므로, 공급사 미등록인 맞춤 규격은 자동 등록·발주에서 빠지고 담당자가 처리한다
   `운임 기준` 문장(`freightBasis`)
 
 ## 들어가는지 판정·충진율 (packing-engine)
