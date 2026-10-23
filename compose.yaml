@@ -37,8 +37,9 @@ services:
       BUSINESS_API_URL: ${AGENT_BUSINESS_API_URL:-http://backend:8080}   # 로컬 CLI 용 BUSINESS_API_URL 과 분리
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?INTERNAL_API_TOKEN을 .env에 설정하세요 (backend 와 같은 값)}
       SHIPMENT_EVENT_STATUSES: ${SHIPMENT_EVENT_STATUSES:-}
+      UPACKAGE_CACHE_DB: /app/proposals/custom_quotes.db   # /app 은 쓰기 불가 → 유팩 견적 캐시는 볼륨에
     volumes:
-      - proposals:/app/proposals          # save_proposal 사본(json/md)
+      - proposals:/app/proposals          # save_proposal 사본(json/md), 유팩 견적 캐시
     healthcheck: &tcp-health
       test: ["CMD", "python", "-c", "import os,socket; socket.create_connection(('127.0.0.1', int(os.environ['MCP_PORT'])), 2)"]
       interval: 10s
