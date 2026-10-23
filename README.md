@@ -125,7 +125,9 @@ python tests/knowledge_eval.py       # rag 검색 적중 (top-3, --k 1)
   렌더러 `render_proposal_html`(proposal_server). ⑧ write_proposal 이 회사 양식 md 와 함께 만든다
 - 구성: 요약 3줄(주문 개수 · 주문금액 · 예상 이익 월/연) → 숫자 4칸 → 규격별 제안 수량 → 도입 효과(박스비·운임 누적 막대) →
   예상 총 주문금액(규격별 막대) → 상세보기(확인 필요 · 근거 · 산출 방법, 전월·전년 비교는 여기에)
-- 예상 이익 = 도입 효과 블록의 월 박스비 + 운임 절감(맞춤 규격 제외), 연 환산 × 12. 숫자는 md 와 같은 툴 결과
+- 예상 이익 = 도입 효과 블록의 `monthly_saving`(선정 시 `sim_combined`, 없으면 등록 규격 `recent_effect`) 하나만 쓴다.
+  근거 문장·md 표·HTML 이 같은 값이고, 적재량 합계로 다시 빼지 않는다. 맞춤 규격 제외, 연 환산 × 12
+- 단일 품목 후보의 근거 문장은 `sim_results[].moved` 의 anchor 상품 값(충진율 전후·이전 박스)으로 쓰고, 함께 옮겨 가는 상품은 따로 적는다
 - 나가는 곳: `APPROVAL_REQUIRED.proposalHtml`, 저장 `summary.bodyHtml`, `./proposals/<jobId>.html`. ⑨ 평가는 md 로만 한다
 - 외부 라이브러리 없이 HTML 한 파일(인라인 SVG 차트·다크 모드). 차트 색은 색각 검사 통과 값 — 바꾸면 다시 검사
 
