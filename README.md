@@ -15,7 +15,7 @@ Spring Boot ──내부 HTTP──▶ agent_server.py (FastAPI, LangGraph + Har
 | Agent 서버 | `agent_server.py` | 작업 실행(202)·SSE 진행 이벤트·승인 후 재개 | DB 업무 데이터를 직접 쓰지 않음(checkpointer만) |
 | 그래프 | `box_spec_agent.py` | ①~⑪ StateGraph. CLI 실행도 같은 그래프 | 숫자는 MCP 계산 도구만 만든다 |
 | Harness | `harness.py`, `prompts/*.md` | 한도·재시도·기록·마스킹·인용 대조 | 아래 'Harness' 표 |
-| business-mcp | `mcp_servers/business_mcp.py` | 조회·계산·제안 저장 23개 도구 (wms·catalog·custom_quote·packing·forecast·proposal 모듈) | DB 직접 접근 없음, Spring `/internal/v1/**` 호출 |
+| business-mcp | `mcp_servers/business_mcp.py` | 조회·계산·제안 저장 25개 도구 (wms·catalog·custom_quote·packing·forecast·proposal 모듈) | DB 직접 접근 없음, Spring `/internal/v1/**` 호출 |
 | rag-mcp | `mcp_servers/rag_mcp.py` | 규정·반려 기록 검색, Resource `policy://`·`feedback://` | 업무 데이터 변경 없음 |
 | Spring 내부 API | `server/chagok/.../domain/agent` | 에이전트용 조회·제안 저장, 센터·규격 소속 검증 | `X-Internal-Token`(INTERNAL_API_TOKEN), 세션·CSRF 없음 |
 
@@ -119,6 +119,15 @@ python tests/knowledge_eval.py       # rag 검색 적중 (top-3, --k 1)
 - 2026-10-21 반려 해석 12문장: keyword 2/12, llm 3/12, **llm+rag 12/12** (`tests/results/feedback_eval_20261021_1140.md`).
   llm(도구 없음)은 지시문이 도구 사용을 전제로 해 불리한 비교다
 - 프롬프트·한도·모델을 바꾸면 두 평가를 다시 돌려 결과표를 남긴다
+
+## 보기용 HTML 제안서
+- 양식 `mcp_servers/templates/box_order_proposal.html` (2026-10-23 확정 'A 임원 보고형', client 브랜드 색: 네이비·골드·크림),
+  렌더러 `render_proposal_html`(proposal_server). ⑧ write_proposal 이 회사 양식 md 와 함께 만든다
+- 구성: 요약 3줄(주문 개수 · 주문금액 · 예상 이익 월/연) → 숫자 4칸 → 규격별 제안 수량 → 도입 효과(박스비·운임 누적 막대) →
+  예상 총 주문금액(규격별 막대) → 상세보기(확인 필요 · 근거 · 산출 방법, 전월·전년 비교는 여기에)
+- 예상 이익 = 도입 효과 블록의 월 박스비 + 운임 절감(맞춤 규격 제외), 연 환산 × 12. 숫자는 md 와 같은 툴 결과
+- 나가는 곳: `APPROVAL_REQUIRED.proposalHtml`, 저장 `summary.bodyHtml`, `./proposals/<jobId>.html`. ⑨ 평가는 md 로만 한다
+- 외부 라이브러리 없이 HTML 한 파일(인라인 SVG 차트·다크 모드). 차트 색은 색각 검사 통과 값 — 바꾸면 다시 검사
 
 ## 문장 작성(⑧)과 검토(⑨)
 - `sample_proposal_2026-11.md` = 양식대로 채운 예시 제안서. `get_template`의 `example_md`로 LLM에 넘겨 문체·구성만 참고하게 한다
