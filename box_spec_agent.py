@@ -473,12 +473,17 @@ async def _quote_custom(node: str, dims: list[int], qty90d: int) -> dict:
     return q
 
 
+def _fill_mode(cfg: dict) -> dict | None:
+    """충진율 목표 모드(POL-02 §7): 본부가 켠 센터만. 절감 대신 규제 대상 충진율 개선으로 선정, 월 추가 비용 한도 안에서"""
+    return {"min_gain": cfg["fill_mode_min_gain"], "max_extra_cost": cfg["fill_mode_max_extra_cost"]} if cfg["fill_mode"] else None
+
+
 async def simulate(state: AgentState):
     r = await mcp_call("simulate", "business", "simulate_boxset",
                        products=state["product_fits"], box_specs=state["box_specs"],
                        candidates=state["candidates"], gate=state["config"]["gate"],
                        margin_mm=state["config"]["margin_mm"], allow_tilt=state["config"]["allow_tilt"],
-                       tilt_clearance_mm=state["config"]["tilt_clearance_mm"])
+                       tilt_clearance_mm=state["config"]["tilt_clearance_mm"], fill_mode=_fill_mode(state["config"]))
     if r["combined"]:
         b, a = r["combined"]["load"]["before"], r["combined"]["load"]["after"]
         log("simulate", f"도입 효과(월 {n(b['shipments'])}건): 충진율 {b['fill']}→{a['fill']}% "
@@ -487,7 +492,9 @@ async def simulate(state: AgentState):
         log("simulate", f"{x['candId']:<6} 대상 {x['target_fill_before']}→{x['target_fill_after']}% "
                         f"월절감 {n(x['monthly_saving'])} pass={x['pass']} selected={x['selected']}")
     sel = [x["candId"] for x in r["results"] if x["selected"]]
-    log("simulate", f"게이트 통과·선정: {sel or '없음 → 기존 규격만 보충'}")
+    log("simulate", f"게이트 통과·선정: {sel or '없음 → 기존 규격만 보충'}"
+                    + (f" (충진율 목표 모드: 규제 대상 충진율 {r['combined']['reg_fill_before']}→{r['combined']['reg_fill_after']}%)"
+                       if state["config"]["fill_mode"] and r["combined"] else ""))
     cfg, specs = state["config"], state["box_specs"]
     opts = {"margin_mm": cfg["margin_mm"], "allow_tilt": cfg["allow_tilt"], "tilt_clearance_mm": cfg["tilt_clearance_mm"]}
     # 활성 규격 상한(POL-02 §3): 기존 규격은 비활성화하지 않고, 넘으면 절감 작은 신규 후보부터 제외
@@ -502,7 +509,7 @@ async def simulate(state: AgentState):
     if lim["drop"]:
         keep = [c for c in state["candidates"] if c["code"] not in lim["drop"]]
         r = await mcp_call("simulate", "business", "simulate_boxset", products=state["product_fits"], box_specs=specs,
-                           candidates=keep, gate=cfg["gate"], **opts)
+                           candidates=keep, gate=cfg["gate"], fill_mode=_fill_mode(cfg), **opts)
         sel = [x["candId"] for x in r["results"] if x["selected"]]
     log("simulate", f"활성 규격 {lim['count_before']}종 + 신규 {len(new)}종 = {lim['count_proposed']}종 / 상한 {lim['max_active']}종"
                     + (f" → 신규 제외 {lim['drop']}" if lim["drop"] else ""))
@@ -667,6 +674,11 @@ def _check_items(state: AgentState, sel: list, prev_amt, ly_amt) -> list[str]:
         if r.get("overStock"):
             checks.append(f"{r['label']}: 재고(현재 {n(r['currentQty'])} + 제안 {n(r['proposedQty'])})가 "
                           f"{cfg['max_stock_months']:g}개월 소모분 {n(r['stockCap'])}개를 넘음 — 보관 공간 확인·입고 분할 결정 필요")
+    comb, res0 = state.get("sim_combined") or {}, (state.get("sim_results") or [{}])[0]    # POL-02 §7 충진율 목표
+    reg = comb.get("reg_fill_after", res0.get("reg_fill_before"))
+    if reg is not None and reg < cfg["fill_target_pct"]:
+        checks.append(f"포장 규제 대상(세 변 합 50cm 초과) 출고 충진율 {reg}%로 목표 {cfg['fill_target_pct']:g}%에 못 미침"
+                      + ("" if cfg["fill_mode"] else " — 본부 충진율 목표 모드 적용 여부 결정 필요"))
     if plan.get("peakSafety"):                       # POL-03 §1 성수기 안전 재고
         checks.append(f"성수기 안전 재고 {plan['safetyDays']}일분 적용(기본 {cfg['safety_days']}일)")
     if prev_amt:                                     # POL-03 §4 전월 대비 금액 변동 사유
@@ -797,7 +809,10 @@ def _html_data(state: AgentState, values: dict, sel: list, checks: list[str], re
         saving = block["monthly_saving"]          # 예상 이익 = 시뮬레이션 절감액 하나 (근거 문장·md 표와 같은 값)
         if saving > 0:
             profit = {"monthly": saving, "note": f"연 환산 {n(saving * 12)}원 · 박스비 + 운임 절감"}
-        frm = "·".join(block["load"]["fromBoxes"])
+        elif block.get("reg_fill_after") is not None:      # 충진율 목표 모드: 비용은 늘지만 규제 대상 충진율 개선
+            profit = {"monthly": None, "note": f"충진율 목표 모드 · 월 비용 +{n(-saving)}원, 규제 대상 충진율 "
+                                               f"{block['reg_fill_before']}% → {block['reg_fill_after']}%"}
+        frm ="·".join(block["load"]["fromBoxes"])
         eff = {"subtitle": f"{title} · 대상 월 {n(b['shipments'])}건 (기존 {frm})",
                "cost": [[f"도입 전 ({frm})", b["box_krw"], b["freight_krw"]], [f"도입 후 ({title})", a["box_krw"], a["freight_krw"]]],
                "rows": [["월 박스비 + 운임", f"{'−' if saving > 0 else '+'}{n(abs(saving))}원 "
@@ -874,12 +889,18 @@ async def write_proposal(state: AgentState):
         else:
             what = (f"{cats(c)} 구간(출고 비중 {c['share_pct']}%)이 {c['from_box']}에 담겨 충진율 "
                     f"{s['target_fill_before']}% → {s['target_fill_after']}%로 개선")
-        reason2 = f"신규 규격 {cd0[s['candId']]['name']} {dims_s(s['dims'])} 도입: {what}"
+        nm = cd0[s["candId"]]["name"]
+        reason2 = f"신규 규격 {nm if s['type'] == 'CUSTOM' else nm + ' ' + dims_s(s['dims'])} 도입: {what}"
         if others:
             reason2 += (f". 더 작은 박스가 생겨 {', '.join(r['name'] for r in others[:3])}"
                         + (f" 외 {len(others) - 3}개" if len(others) > 3 else "") + " 상품도 함께 옮겨 감")
         if len(sel) > 1:
             reason2 += f". 그 밖에 {', '.join(cd0[x['candId']]['name'] for x in sel[1:])}도 도입"
+        if any(x.get("pass_by") == "FILL" for x in sel):
+            cfgx = state["config"]
+            reason2 += (f". 충진율 목표 모드(목표 {cfgx['fill_target_pct']:g}%)로 선정 — 규제 대상 충진율 "
+                        f"{comb0.get('reg_fill_before')}% → {comb0.get('reg_fill_after')}%, 월 추가 비용 한도 "
+                        f"{n(cfgx['fill_mode_max_extra_cost'])}원")
         reason2 += (f". 선정 규격 전체로 월 박스비·운임 약 {n(saving)}원 절감, "
                     f"{', '.join(sorted({r for x in sel for r in x['replaces']}))} 예상 소모는 그만큼 줄여 반영")
     else:
