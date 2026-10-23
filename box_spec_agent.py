@@ -619,6 +619,10 @@ def _pct(before, after) -> str:
     return f"{(after / before - 1) * 100:+.1f}%" if before else "—"
 
 
+FREIGHT_BASIS = ("경동 정기화물 운임표 — 50,000㎤ 이하는 소화물 부피 운임, 그 위는 부피·무게 운임 중 높은 금액. "
+                 "박스 1개 = 1건, 부피는 박스 내치수, 무게는 상품 실중량(박스 무게 제외)")
+
+
 def _effect(state: AgentState, sel: list) -> tuple[str, list[dict]]:
     """신규 규격 도입 효과 표: 배정이 바뀌는 출고를 기존 박스로 보낼 때 vs 신규 규격으로 보낼 때 (툴 결과만 사용)"""
     comb = state.get("sim_combined")
@@ -640,6 +644,14 @@ def _effect(state: AgentState, sel: list) -> tuple[str, list[dict]]:
         {"metric": "월 박스비", "before": f"{n(b['box_krw'])}원", "after": f"{n(a['box_krw'])}원",
          "change": f"{'−' if a['box_krw'] < b['box_krw'] else '+'}{n(abs(a['box_krw'] - b['box_krw']))}원 "
                    f"({_pct(b['box_krw'], a['box_krw'])})"},
+        {"metric": "월 운임(경동 정기화물)", "before": f"{n(b['freight_krw'])}원", "after": f"{n(a['freight_krw'])}원",
+         "change": f"{'−' if a['freight_krw'] < b['freight_krw'] else '+'}{n(abs(a['freight_krw'] - b['freight_krw']))}원 "
+                   f"({_pct(b['freight_krw'], a['freight_krw'])})"},
+        {"metric": "월 박스비 + 운임", "before": f"{n(b['box_krw'] + b['freight_krw'])}원",
+         "after": f"{n(a['box_krw'] + a['freight_krw'])}원",
+         "change": f"{'−' if a['box_krw'] + a['freight_krw'] < b['box_krw'] + b['freight_krw'] else '+'}"
+                   f"{n(abs(a['box_krw'] + a['freight_krw'] - b['box_krw'] - b['freight_krw']))}원 "
+                   f"({_pct(b['box_krw'] + b['freight_krw'], a['box_krw'] + a['freight_krw'])})"},
         {"metric": "센터 전체 충진율", "before": f"{comb['overall_fill_before']}%",
          "after": f"{comb['overall_fill_after']}%",
          "change": f"{comb['overall_fill_after'] - comb['overall_fill_before']:+.1f}%p"},
@@ -711,6 +723,7 @@ async def write_proposal(state: AgentState):
     rows = [{"spec": r["label"], "currentQty": n(r["currentQty"]), "expectedUsage": n(r["expectedUsage"]),
              "safetyQty": n(r["safetyQty"]), "proposedQty": n(r["proposedQty"])} for r in plan["orderRows"]]
     values["effectBasis"], effect_rows = _effect(state, sel)
+    values["freightBasis"] = FREIGHT_BASIS
 
     checks = _check_items(state, sel, prev_amt, ly_amt)
     if state["config"]["demo_eval_loop"] and rv["loop_count"] == 0:

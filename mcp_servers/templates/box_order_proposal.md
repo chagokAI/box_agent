@@ -30,6 +30,8 @@
 |:---|---:|---:|---:|
 | {{metric}} | {{before}} | {{after}} | {{change}} |
 
+운임 기준: {{freightBasis}}
+
 ## 예상 총 주문금액
 
 **{{totalAmount}}** (VAT 별도)

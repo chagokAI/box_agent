@@ -231,7 +231,7 @@ def list_product_fits(warehouse_id: str, from_date: str, to_date: str) -> dict:
             no_ship += 1
             continue
         items.append({"productId": r["productId"], "code": r["code"], "name": r["name"],
-                      "category": r["category"] or "미분류", "dims": dims, "qty90d": r["shipments"],
+                      "category": r["category"] or "미분류", "dims": dims, "weightG": r.get("weightG"), "qty90d": r["shipments"],
                       "matchedBox": r["matchedBox"], "fillRatePct": r["fillRatePct"]})
     return {"items": items, "excluded": {"noDims": no_dims, "noShipments": no_ship},
             "meta": _meta(warehouse_id), "period": {"from": from_date, "to": to_date}}

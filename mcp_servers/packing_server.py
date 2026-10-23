@@ -7,16 +7,49 @@ AI가 직접 하면 틀리기 쉬운 계산은 전부 여기서 한다. 상태�
 들어가는지 판정: 상품 치수 + margin_mm 를 6방향 회전으로 먼저 보고, allow_tilt 이면 안 들어가는 박스에
 한 평면 기울임(Carver 조건, fits_tilted)을 적용한다. 기울임 배정은 fit="TILTED"로 표시하고 검토 대상으로 둔다.
 충진율은 기울임과 관계없이 부피비(상품 부피 / 박스 부피).
+
+운임: 경동 정기화물 운임표(templates/kyungdong_regular_freight.md, FREIGHT_TABLE)로 박스 1개씩 계산한다.
+  - 50,000㎤ 이하(소화물): 소화물 표준운임(부피)만. 무게 운임은 보지 않는다
+  - 50,000㎤ 초과: 경동 부피요율표(㎤)와 무게 운임(중대형화물 표준운임 → 운임표 4, kg) 중 높은 금액
+  부피 = 박스 내치수(외치수 없음), 무게 = 상품 실중량(weightG, 박스 무게 없음). 무게가 없으면 부피 운임만.
+  표 범위(2,000,000㎤ · 1,010kg)를 넘으면 마지막 구간 운임을 쓴다.
+  FREIGHT_MODE=max 이면 표 문구 그대로 모든 크기에서 부피·무게 중 높은 금액(소화물도 무게표 최저 4,500원 적용).
 """
+import bisect
 import itertools
 import math
+import os
+import re
+from pathlib import Path
 
 import numpy as np
 from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("packing-engine", log_level="WARNING")
 
-SHIPPING_TIERS = [(500, 2900), (800, 3100), (1000, 3500), (1200, 4300), (1600, 5800)]  # 세변합 상한, 운임
+FREIGHT_TABLE = Path(os.getenv("FREIGHT_TABLE", Path(__file__).resolve().parent / "templates" / "kyungdong_regular_freight.md"))
+
+
+def _load_freight(path: Path) -> tuple[list, list]:
+    """운임표 md → (부피 구간 [(상한 ㎤, 운임)], 무게 구간 [(상한 kg, 운임)]). '## ' 제목에 '부피'·'무게'·'운임표 4'로 나눈다"""
+    vol, wt, cur = [], [], None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("## "):
+            cur = vol if "부피" in line else wt if ("무게" in line or "운임표 4" in line) else None
+            continue
+        m = re.match(r"\|\s*(.+?)이하\s*\|\s*([\d,]+)\s*\|", line)
+        if cur is not None and m:
+            cap = float(re.findall(r"[\d,]+", m.group(1))[-1].replace(",", ""))
+            cur.append((cap, int(m.group(2).replace(",", ""))))
+    vol, wt = sorted(set(vol)), sorted(set(wt))
+    if not vol or not wt:
+        raise RuntimeError(f"운임표를 읽지 못함: {path}")
+    return vol, wt
+
+
+VOL_TIERS, WT_TIERS = _load_freight(FREIGHT_TABLE)
+SMALL_PARCEL_CM3 = 50_000                 # 소화물 표준운임 표의 상한
+FREIGHT_MODE = os.getenv("FREIGHT_MODE", "split")   # split(기본) | max
 
 
 # ---------------------------------------------------------------- 계산 함수
@@ -61,9 +94,17 @@ def fits(item, box, margin, allow_tilt=False, tilt_clearance=0):
     return fit_source(item, box, margin, allow_tilt, tilt_clearance) is not None
 
 
-def ship_fee(box_dims):
-    s = sum(box_dims)
-    return next((fee for cap, fee in SHIPPING_TIERS if s <= cap), 7000)
+def _tier_fee(tiers, x):
+    i = bisect.bisect_left([c for c, _ in tiers], x)
+    return tiers[min(i, len(tiers) - 1)][1]
+
+
+def ship_fee(box_dims, weight_g=None):
+    """경동 정기화물 1건 운임: 소화물(50,000㎤ 이하)은 부피 운임만, 그 위는 부피·무게 운임 중 높은 금액"""
+    cm3, fee = vol(box_dims) / 1000, _tier_fee(VOL_TIERS, vol(box_dims) / 1000)
+    if not weight_g or (FREIGHT_MODE != "max" and cm3 <= SMALL_PARCEL_CM3):
+        return fee
+    return max(fee, _tier_fee(WT_TIERS, weight_g / 1000))
 
 
 def best_fit(item_dims, boxes, margin, allow_tilt=False, tilt_clearance=0):
@@ -82,7 +123,7 @@ def _simulate(products, boxes, margin, allow_tilt=False, tilt_clearance=0):
         item_v += vol(p["dims"]) * q
         box_v += vol(b["dims"]) * q
         box_cost += b["price"] * q
-        ship_cost += ship_fee(b["dims"]) * q
+        ship_cost += ship_fee(b["dims"], p.get("weightG")) * q
     return {"fill": 100 * item_v / box_v, "box_cost": box_cost, "ship_cost": ship_cost,
             "qty": tot_q, "assign": assign}
 
@@ -90,15 +131,17 @@ def _simulate(products, boxes, margin, allow_tilt=False, tilt_clearance=0):
 def _load(products, assign, boxes):
     """배정된 박스 기준 월(90일 ÷ 3) 적재량: 상품 부피·박스 부피(m³), 박스비(KRW, 단가 × 출고)"""
     spec = {b["code"]: b for b in boxes}
-    q = item_v = box_v = cost = 0
+    q = item_v = box_v = cost = freight = 0
     for p in products:
         b = spec[assign[p["productId"]]]
         q += p["qty90d"]
         item_v += vol(p["dims"]) * p["qty90d"]
         box_v += vol(b["dims"]) * p["qty90d"]
         cost += b["price"] * p["qty90d"]
+        freight += ship_fee(b["dims"], p.get("weightG")) * p["qty90d"]
     return {"shipments": round(q / 3), "item_m3": round(item_v / 3 / 1e9, 2), "box_m3": round(box_v / 3 / 1e9, 2),
-            "box_krw": round(cost / 3), "fill": round(100 * item_v / box_v, 1) if box_v else None}
+            "box_krw": round(cost / 3), "freight_krw": round(freight / 3),
+            "fill": round(100 * item_v / box_v, 1) if box_v else None}
 
 
 def _kmeans(x, k, iters=30, seed=0):
@@ -120,7 +163,8 @@ def analyze_fill_rate(products: list[dict], box_specs: list[dict], margin_mm: in
     for p in products:
         b = best_fit(p["dims"], box_specs, margin_mm, allow_tilt, tilt_clearance_mm)
         if b is None:
-            unfit.append({"productId": p["productId"], "code": p.get("code"), "dims": p["dims"], "qty90d": p["qty90d"]})
+            unfit.append({"productId": p["productId"], "code": p.get("code"), "dims": p["dims"], "qty90d": p["qty90d"],
+                          "weightG": p.get("weightG")})
             continue
         slack = [max(0, bd - pd) for bd, pd in zip(sdims(b["dims"]), sdims(p["dims"]))]
         out.append({**p, "box": b["code"], "fill": round(100 * vol(p["dims"]) / vol(b["dims"]), 2),   # 서버와 같은 둘째 자리
