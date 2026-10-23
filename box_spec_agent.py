@@ -175,6 +175,9 @@ class AgentState(TypedDict, total=False):
     product_fits: list                        # 상품별 치수·출고량·배정박스·충진율·원인
     unfit_products: list                      # 보유 규격 어디에도 안 들어가는 상품
     tilted_products: list                     # 기울여야 들어가는 상품(검토 대상)
+    custom_unfit: dict | None                 # 안 들어가는 상품용 맞춤 제작 규격(유팩 참고 견적)
+    custom_notes: list                        # 맞춤 견적 실패·불가 메모('확인 필요'에 적음)
+    order_quotes: dict                        # 맞춤 규격 2차 견적(제안 수량 기준) {code: quote}
     diagnosis: dict                           # 원인별 출고 비중
     clusters: list                            # '애매한 WDH' 군집
     candidates: list                          # 신규 규격 후보
@@ -261,8 +264,9 @@ def default_config(job: dict) -> dict:
         "safety_days": 7, "rounding_unit": 100, "lookback_days": 90,
         "gate": {
             "CATALOG": {"monthly_saving": 300_000, "share_pct": 3, "delta_fill": 10},
+            "CUSTOM": {"monthly_saving": 300_000, "share_pct": 3, "delta_fill": 10, "payback_m": 6},
         },
-        "no_new_specs": False,
+        "no_new_specs": False, "no_custom": False,
         "demo_eval_loop": job.get("demoEvalLoop", False),
     }
 
@@ -373,9 +377,10 @@ async def gen_candidates(state: AgentState):
     cfg, m = state["config"], state["config"]["margin_mm"]
     specs = {b["code"]: b for b in state["box_specs"]}
     cands = []
+    notes: list[str] = []
     if cfg["no_new_specs"]:
         log("gen_candidates", "운영자 피드백 반영: 신규 규격 없이 기존 규격만 보충")
-        return {"candidates": [], "messages": ["gen_candidates"]}
+        return {"candidates": [], "custom_unfit": None, "custom_notes": [], "messages": ["gen_candidates"]}
     for c in state["clusters"]:
         prods = [p for p in state["product_fits"] if p["productId"] in c["productIds"]]
         ideal = (await mcp_call("gen_candidates", "business", "ideal_box_dims",
@@ -398,6 +403,18 @@ async def gen_candidates(state: AgentState):
                               "price": it["price"], "moq": it["moq"], "ref": f"{it['supplier']}:{it['goodsNo']}",
                               "coverage": cov, "init_cost": 0})
                 break
+        if not cfg["no_custom"] and not any(x["cluster"] == c["clusterId"] for x in cands):
+            q = await _quote_custom("gen_candidates", ideal, sum(p["qty90d"] for p in prods))
+            if not q["ok"]:
+                notes.append(f"{c['clusterId']} {cats(c)} 구간: 기성품 후보 없음, {q['note']}")
+                continue
+            cov = (await mcp_call("gen_candidates", "business", "coverage", products=prods, box_dims=ideal,
+                                  margin_mm=m, allow_tilt=cfg["allow_tilt"],
+                                  tilt_clearance_mm=cfg["tilt_clearance_mm"]))["coverage_pct"]
+            cands.append({"candId": f"{c['clusterId']}-CUS", "cluster": c["clusterId"], "type": "CUSTOM",
+                          "code": f"N-맞춤 {dims_s(ideal)}", "name": f"맞춤 {dims_s(ideal)}", "dims": ideal,
+                          "price": q["unitPrice"], "moq": 1, "ref": f"upackage:{q['spec']}", "coverage": cov,
+                          "init_cost": q["initCost"], "quote": q})
     past = {tuple(sorted(s["dims"], reverse=True)): x["targetMonth"]
             for x in reversed(state.get("past_proposals", [])) for s in x["newSpecs"]}
     for x in cands:                      # 같은 규격을 이전 제안에서도 냈다면 표시(규격 등록이 안 된 상태)
@@ -405,7 +422,30 @@ async def gen_candidates(state: AgentState):
         log("gen_candidates", f"{x['candId']:<6} {x['type']:<7} {x['dims']} {x['price']}원 "
                               f"커버율 {x['coverage']}% ref={x['ref']}"
                               + (f" (지난 {x['proposedBefore']} 제안에도 포함)" if x["proposedBefore"] else ""))
-    return {"candidates": cands, "messages": ["gen_candidates"]}
+    unfit = None
+    if state.get("unfit_products") and not cfg["no_custom"]:   # 보유 규격 어디에도 안 들어가는 상품 → 맞춤 제작 1종
+        u = state["unfit_products"]
+        need = [max(sorted(p["dims"], reverse=True)[i] for p in u) for i in range(3)]
+        dims = (await mcp_call("gen_candidates", "business", "ideal_box_dims", p90_dims=need, margin_mm=m))["dims"]
+        q = await _quote_custom("gen_candidates", dims, sum(p["qty90d"] for p in u))
+        if q["ok"]:
+            unfit = {"code": f"N-맞춤 {dims_s(dims)}", "name": f"맞춤 {dims_s(dims)}", "dims": dims,
+                     "price": q["unitPrice"], "init_cost": q["initCost"], "quote": q,
+                     "products": [p["code"] or p["productId"] for p in u], "qty90d": sum(p["qty90d"] for p in u)}
+            log("gen_candidates", f"안 들어가는 상품 {len(u)}개 → 맞춤 {dims_s(dims)} {n(q['unitPrice'])}원 "
+                                  f"(견적 {n(q['qty'])}개, 납기 {q['leadDate']})")
+        else:
+            notes.append(f"안 들어가는 상품 {len(u)}개용 맞춤 규격 {dims_s(dims)}: {q['note']}")
+    return {"candidates": cands, "custom_unfit": unfit, "custom_notes": notes, "messages": ["gen_candidates"]}
+
+
+async def _quote_custom(node: str, dims: list[int], qty90d: int) -> dict:
+    """월 출고량(90일 ÷ 3, 100개 단위 올림)으로 유팩 맞춤 제작 참고 견적"""
+    qty = max(100, -(-qty90d // 3 // 100) * 100)
+    q = await mcp_call(node, "business", "quote_custom_box", dims=dims, qty=qty)
+    log(node, f"맞춤 견적 {dims_s(dims)} × {n(qty)}개: " + (f"{n(q['unitPrice'])}원/개, 초기비 {n(q['initCost'])}원, "
+                                                          f"납기 {q['leadDate']}" if q["ok"] else q["note"]))
+    return q
 
 
 async def simulate(state: AgentState):
@@ -434,16 +474,22 @@ async def plan_order(state: AgentState):
         if r["selected"]:
             c = cd[r["candId"]]
             new_specs.append({"code": c["code"], "dims": c["dims"], "price": c["price"],
-                              "label": f"{c['name']} {dims_s(c['dims'])} (신규)"})
+                              "label": f"{c['name']} (신규·맞춤)" if c["type"] == "CUSTOM"
+                              else f"{c['name']} {dims_s(c['dims'])} (신규)"})
+    products, cu = state["product_fits"], state.get("custom_unfit")
+    if cu:                               # 안 들어가던 상품도 맞춤 규격으로 소모량을 잡는다
+        new_specs.append({"code": cu["code"], "dims": cu["dims"], "price": cu["price"], "label": f"{cu['name']} (신규·맞춤)"})
+        products = products + state["unfit_products"]
     specs = [{**b, "label": " ".join(x for x in (b["code"], b.get("name") if b.get("name") != b["code"] else None,
                                                   dims_s(b["dims"])) if x)} for b in state["box_specs"]]
     y, m = map(int, tm.split("-"))
     r = await mcp_call("plan_order", "business", "plan_order",
-                       products=state["product_fits"], box_specs=specs, new_specs=new_specs,
+                       products=products, box_specs=specs, new_specs=new_specs,
                        inventory=state["inventory"], forecast_shipments=state["forecast"]["forecast"],
                        days_in_month=calendar.monthrange(y, m)[1], safety_days=cfg["safety_days"],
                        rounding_unit=cfg["rounding_unit"], margin_mm=cfg["margin_mm"], allow_tilt=cfg["allow_tilt"],
                        tilt_clearance_mm=cfg["tilt_clearance_mm"])
+    order_quotes = await _requote_custom(state, r)
     for row in r["orderRows"]:
         log("plan_order", f"{row['label']:<26} 재고 {n(row['currentQty']):>6} 소모 {n(row['expectedUsage']):>6} "
                           f"안전 {n(row['safetyQty']):>5}{'*' if row['safetySource'] == 'CONFIGURED' else ' '}"
@@ -451,7 +497,32 @@ async def plan_order(state: AgentState):
     t = r["totals"]
     log("plan_order", f"{t['specCount']}개 규격 총 {n(t['qty'])}개, {n(t['amount'])}원 | 발주 제외: {r['skipped']} "
                       f"(* = 규격에 설정된 안전 재고)")
-    return {"order_plan": r, "messages": ["plan_order"]}
+    return {"order_plan": r, "order_quotes": order_quotes, "messages": ["plan_order"]}
+
+
+async def _requote_custom(state: AgentState, plan: dict) -> dict:
+    """맞춤 규격은 1차 견적(월평균 출고 수량)으로 후보를 고른 뒤, 확정된 제안 수량으로 다시 견적을 받아
+    주문표 단가·금액·합계를 바꾼다. 2차 견적이 실패하면 1차 단가를 그대로 둔다(게이트 재심사는 하지 않음)"""
+    first = {c["code"]: c["quote"] for c in state["candidates"] if c.get("quote")}
+    if state.get("custom_unfit"):
+        first[state["custom_unfit"]["code"]] = state["custom_unfit"]["quote"]
+    out = {}
+    for row in plan["orderRows"]:
+        q1 = first.get(row["code"])
+        if not q1:
+            continue
+        q = q1 if row["proposedQty"] == q1["qty"] else await mcp_call(
+            "plan_order", "business", "quote_custom_box", dims=q1["dims"], qty=row["proposedQty"])
+        if not q["ok"]:
+            log("plan_order", f"{row['label']} 2차 견적 실패 → 1차 단가 {n(q1['unitPrice'])}원 유지 ({q['note']})")
+            continue
+        out[row["code"]] = q
+        row["unitPrice"], row["amount"] = q["unitPrice"], q["amount"]
+        log("plan_order", f"{row['label']} 2차 견적 {n(row['proposedQty'])}개: {n(q['unitPrice'])}원/개 "
+                          f"(1차 {n(q1['qty'])}개 {n(q1['unitPrice'])}원)")
+    if out:
+        plan["totals"]["amount"] = sum(x["amount"] for x in plan["orderRows"])
+    return out
 
 
 def _po_amount(pos: list, ym: str):
@@ -478,6 +549,9 @@ def _check_items(state: AgentState, sel: list, prev_amt, ly_amt) -> list[str]:
     for s in sel:
         c = cd[s["candId"]]
         row = next(r for r in plan["orderRows"] if r["code"] == s["code"])
+        if c["type"] == "CUSTOM":
+            checks += _custom_checks(c["name"], c["quote"], (state.get("order_quotes") or {}).get(c["code"]))
+            continue
         packs = -(-row["proposedQty"] // c["moq"])
         checks.append(f"신규 규격 {c['name']}: 규격 관리(box_spec) 등록 필요. "
                       f"박스왕 묶음 {c['moq']}매 단위라 실주문 {packs}묶음({n(packs * c['moq'])}개)")
@@ -495,7 +569,14 @@ def _check_items(state: AgentState, sel: list, prev_amt, ly_amt) -> list[str]:
         checks.append(f"{', '.join(sw)}: 신규 규격 전환으로 소모가 줄어 이번 발주 제외 (현 재고로 충당)")
     if rest:
         checks.append(f"재고 충분으로 이번 발주 제외: {', '.join(rest)}")
-    if state.get("unfit_products"):
+    cu = state.get("custom_unfit")
+    if cu:
+        row = next((r for r in plan["orderRows"] if r["code"] == cu["code"]), None)
+        checks.append(f"보유 규격에 안 들어가는 상품 {len(cu['products'])}개(90일 출고 {n(cu['qty90d'])}건)용 "
+                      f"{cu['name']} 제안 — 절감이 아니라 포장 가능 여부 기준이라 도입 결정 필요")
+        checks += _custom_checks(cu["name"], cu["quote"], (state.get("order_quotes") or {}).get(cu["code"]))
+    checks += state.get("custom_notes") or []
+    if state.get("unfit_products") and not cu:
         u = state["unfit_products"]
         checks.append(f"보유 규격에 안 들어가는 상품 {len(u)}개(90일 출고 {n(sum(x['qty90d'] for x in u))}건)는 계산에서 제외 — "
                       f"대형 규격 필요 여부 확인")
@@ -522,8 +603,24 @@ def _check_items(state: AgentState, sel: list, prev_amt, ly_amt) -> list[str]:
     return checks
 
 
+def _custom_checks(name: str, q1: dict, q2: dict | None) -> list[str]:
+    """q1 = 후보 선정용 1차 견적(월평균 수량), q2 = 제안 수량 기준 2차 견적(없으면 1차 단가 유지)"""
+    q = q2 or q1
+    first = f", 1차 견적 {n(q1['qty'])}개 {n(q1['unitPrice'])}원" if q2 and q2 is not q1 else ""
+    out = [f"{name}: 유팩 참고 견적({q['spec']}, {q['quotedAt'][:10]} 기준, 제안 수량 {n(q['qty'])}개 "
+           f"{n(q['unitPrice'])}원/개 VAT 별도{first}, 판비·목형비 {n(q['initCost'])}원 별도) — 실제 주문 견적·샘플 확인 필요",
+           f"{name}: 제작 납기 약 {q['leadDate']} 도착 예정(견적일 기준), 규격 관리(box_spec) 등록 필요"]
+    if not q2:
+        out.append(f"{name}: 제안 수량 기준 재견적 실패 — 1차 견적 {n(q1['qty'])}개 단가로 계산, 단가 재확인 필요")
+    return out
+
+
 def _pct(before, after) -> str:
     return f"{(after / before - 1) * 100:+.1f}%" if before else "—"
+
+
+FREIGHT_BASIS = ("경동 정기화물 운임표 — 50,000㎤ 이하는 소화물 부피 운임, 그 위는 부피·무게 운임 중 높은 금액. "
+                 "박스 1개 = 1건, 부피는 박스 내치수, 무게는 상품 실중량(박스 무게 제외)")
 
 
 def _effect(state: AgentState, sel: list) -> tuple[str, list[dict]]:
@@ -547,6 +644,14 @@ def _effect(state: AgentState, sel: list) -> tuple[str, list[dict]]:
         {"metric": "월 박스비", "before": f"{n(b['box_krw'])}원", "after": f"{n(a['box_krw'])}원",
          "change": f"{'−' if a['box_krw'] < b['box_krw'] else '+'}{n(abs(a['box_krw'] - b['box_krw']))}원 "
                    f"({_pct(b['box_krw'], a['box_krw'])})"},
+        {"metric": "월 운임(경동 정기화물)", "before": f"{n(b['freight_krw'])}원", "after": f"{n(a['freight_krw'])}원",
+         "change": f"{'−' if a['freight_krw'] < b['freight_krw'] else '+'}{n(abs(a['freight_krw'] - b['freight_krw']))}원 "
+                   f"({_pct(b['freight_krw'], a['freight_krw'])})"},
+        {"metric": "월 박스비 + 운임", "before": f"{n(b['box_krw'] + b['freight_krw'])}원",
+         "after": f"{n(a['box_krw'] + a['freight_krw'])}원",
+         "change": f"{'−' if a['box_krw'] + a['freight_krw'] < b['box_krw'] + b['freight_krw'] else '+'}"
+                   f"{n(abs(a['box_krw'] + a['freight_krw'] - b['box_krw'] - b['freight_krw']))}원 "
+                   f"({_pct(b['box_krw'] + b['freight_krw'], a['box_krw'] + a['freight_krw'])})"},
         {"metric": "센터 전체 충진율", "before": f"{comb['overall_fill_before']}%",
          "after": f"{comb['overall_fill_after']}%",
          "change": f"{comb['overall_fill_after'] - comb['overall_fill_before']:+.1f}%p"},
@@ -586,6 +691,11 @@ async def write_proposal(state: AgentState):
                    f"월 박스비·운임 약 {n(s['monthly_saving'])}원 절감. {', '.join(s['replaces'])} 예상 소모는 그만큼 줄여 반영")
     else:
         reason2 = "신규 규격 후보가 도입 기준(월 절감·충진율 개선)을 넘지 못해 기존 규격만 보충"
+    if state.get("custom_unfit"):
+        cu = state["custom_unfit"]
+        reason2 += (f". 보유 규격에 안 들어가는 상품 {len(cu['products'])}개는 {cu['name']}"
+                    f"(유팩 참고 견적 {n(((state.get('order_quotes') or {}).get(cu['code']) or cu['quote'])['unitPrice'])}원/개)"
+                    f"으로 주문에 포함")
     old = [r for r in plan["orderRows"] if not r["isNew"]]
     top = max(old, key=lambda r: r["proposedQty"]) if old else None
     days_left = (top["currentQty"] / (top["expectedUsage"] / dim)) if top and top["expectedUsage"] else 0
@@ -613,6 +723,7 @@ async def write_proposal(state: AgentState):
     rows = [{"spec": r["label"], "currentQty": n(r["currentQty"]), "expectedUsage": n(r["expectedUsage"]),
              "safetyQty": n(r["safetyQty"]), "proposedQty": n(r["proposedQty"])} for r in plan["orderRows"]]
     values["effectBasis"], effect_rows = _effect(state, sel)
+    values["freightBasis"] = FREIGHT_BASIS
 
     checks = _check_items(state, sel, prev_amt, ly_amt)
     if state["config"]["demo_eval_loop"] and rv["loop_count"] == 0:
@@ -625,7 +736,11 @@ async def write_proposal(state: AgentState):
              "selectedNewSpecs": sel, "clusters": [{k: c[k] for k in ("clusterId", "categories", "share_pct", "p50",
                                                                       "from_box", "avg_fill")} for c in state["clusters"]],
              "orderRows": plan["orderRows"], "skipped": plan["skipped"], "dataMeta": meta,
-             "pastProposals": state.get("past_proposals", []), "newSpecEffect": state.get("sim_combined")}
+             "pastProposals": state.get("past_proposals", []), "newSpecEffect": state.get("sim_combined"),
+             "customQuotes": [c["quote"] for c in state["candidates"] if c.get("quote")]
+                             + ([state["custom_unfit"]["quote"]] if state.get("custom_unfit") else [])
+                             + list((state.get("order_quotes") or {}).values()),
+             "customUnfit": state.get("custom_unfit")}
     llm = {"used": False}
     draft = [reason1, reason2, reason3, *checks]          # 규칙 기반 문장의 숫자도 툴 결과에서 나온 값이라 허용
     out = await llm_writer.polish(facts, [reason1, reason2, reason3], checks, rv["feedback"],
@@ -782,6 +897,8 @@ FEEDBACK_KEYS = {
     "safety_days": (int, 3, 30), "rounding_unit": (int, 50, 1000),
     "gate.CATALOG.monthly_saving": (int, 0, 5_000_000), "gate.CATALOG.share_pct": (float, 0, 50),
     "gate.CATALOG.delta_fill": (float, 0, 50),
+    "no_custom": (bool, None, None), "gate.CUSTOM.monthly_saving": (int, 0, 5_000_000),
+    "gate.CUSTOM.payback_m": (float, 0, 36),
 }
 INTERP_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["changes", "unsupported", "sources"],
                  "properties": {
@@ -876,6 +993,8 @@ def apply_feedback(cfg: dict, comment: str) -> dict:
     cfg, c = dict(cfg), comment.replace(" ", "")
     if any(k in c for k in ("신규제외", "신규없이", "보충만", "기존규격만")):
         cfg["no_new_specs"] = True
+    if any(k in c for k in ("맞춤제외", "맞춤제작제외", "맞춤없이", "맞춤제작빼")):
+        cfg["no_custom"] = True
     if m := re.search(r"안전재고(\d+)일", c):
         cfg["safety_days"] = int(m.group(1))
     return cfg
@@ -890,6 +1009,7 @@ async def save_result(state: AgentState):
     spec_id = {b["code"]: b["boxSpecId"] for b in state["box_specs"]}
     spec = {b["code"]: b for b in state["box_specs"]}
     cd = {c["code"]: c for c in state["candidates"]}
+    oq = state.get("order_quotes") or {}
     sel = [r for r in state["sim_results"] if r["selected"]]
     payload = {
         "proposalId": job["proposalId"], "jobId": job["jobId"], "warehouseId": job["warehouseId"],
@@ -904,10 +1024,20 @@ async def save_result(state: AgentState):
                    "boxName": spec.get(r["code"], {}).get("name"), "sizeClass": spec.get(r["code"], {}).get("sizeClass"),
                    "qty": r["proposedQty"], "unitPriceKrw": r["unitPrice"], "currentQty": r["currentQty"],
                    "safetyQty": r["safetyQty"], "expectedUsage": r["expectedUsage"]} for r in plan["orderRows"]],
-        "newSpecs": [{"code": r["code"], "name": cd[r["code"]]["name"], "dims": r["dims"], "price": r["price"],
+        "newSpecs": [{"code": r["code"], "name": cd[r["code"]]["name"], "dims": r["dims"],
+                      "price": oq[r["code"]]["unitPrice"] if r["code"] in oq else r["price"],
                       "type": r["type"], "ref": cd[r["code"]]["ref"], "moq": cd[r["code"]]["moq"],
                       "replaces": r["replaces"], "monthlySaving": r["monthly_saving"],
-                      "fillBefore": r["target_fill_before"], "fillAfter": r["target_fill_after"]} for r in sel],
+                      "fillBefore": r["target_fill_before"], "fillAfter": r["target_fill_after"],
+                      "initCost": r["init_cost"], "paybackM": r["payback_m"], "quote": cd[r["code"]].get("quote"),
+                      "orderQuote": oq.get(r["code"])}
+                     for r in sel]
+                    + ([{"code": cu["code"], "name": cu["name"], "dims": cu["dims"],
+                         "price": oq[cu["code"]]["unitPrice"] if cu["code"] in oq else cu["price"],
+                         "type": "CUSTOM_UNFIT", "ref": f"upackage:{cu['quote']['spec']}", "moq": 1, "replaces": [],
+                         "products": cu["products"], "initCost": cu["init_cost"], "quote": cu["quote"],
+                         "orderQuote": oq.get(cu["code"])}]
+                       if (cu := state.get("custom_unfit")) else []),
         "clientView": state["client_view"],
         "review": {"score": state["review"]["score"], "rewrites": state["review"]["loop_count"]},
         "textSource": f"llm:{state['llm']['model']}" if (state.get("llm") or {}).get("used") else "rule",

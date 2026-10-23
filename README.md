@@ -15,7 +15,7 @@ Spring Boot ──내부 HTTP──▶ agent_server.py (FastAPI, LangGraph + Har
 | Agent 서버 | `agent_server.py` | 작업 실행(202)·SSE 진행 이벤트·승인 후 재개 | DB 업무 데이터를 직접 쓰지 않음(checkpointer만) |
 | 그래프 | `box_spec_agent.py` | ①~⑪ StateGraph. CLI 실행도 같은 그래프 | 숫자는 MCP 계산 도구만 만든다 |
 | Harness | `harness.py`, `prompts/*.md` | 한도·재시도·기록·마스킹·인용 대조 | 아래 'Harness' 표 |
-| business-mcp | `mcp_servers/business_mcp.py` | 조회·계산·제안 저장 21개 도구 (wms·catalog·packing·forecast·proposal 모듈) | DB 직접 접근 없음, Spring `/internal/v1/**` 호출 |
+| business-mcp | `mcp_servers/business_mcp.py` | 조회·계산·제안 저장 23개 도구 (wms·catalog·custom_quote·packing·forecast·proposal 모듈) | DB 직접 접근 없음, Spring `/internal/v1/**` 호출 |
 | rag-mcp | `mcp_servers/rag_mcp.py` | 규정·반려 기록 검색, Resource `policy://`·`feedback://` | 업무 데이터 변경 없음 |
 | Spring 내부 API | `server/chagok/.../domain/agent` | 에이전트용 조회·제안 저장, 센터·규격 소속 검증 | `X-Internal-Token`(INTERNAL_API_TOKEN), 세션·CSRF 없음 |
 
@@ -129,9 +129,10 @@ python tests/knowledge_eval.py       # rag 검색 적중 (top-3, --k 1)
   실패하거나 자격 증명이 없으면 규칙 기반 문장을 그대로 쓴다.
 - ⑨ 감점: 자리표시자 −30, 빈 섹션 −25/개, 수량 합계 불일치 −20, 총액 불일치 −20,
   LLM 문장에 facts에 없는 숫자(31 초과) −20, 검색 결과에 없는 규정 인용 −20. 80점 미만이면 피드백을 들고 ⑧로(최대 3회).
-- 신규 규격 후보는 박스왕 기성품만 본다(맞춤 제작은 다루지 않음).
+- 신규 규격 후보는 박스왕 기성품을 먼저 보고, 없으면 맞춤 제작(유팩 참고 견적)을 본다. 아래 '맞춤 제작 제안' 절.
 - ⑩ 반려: 키워드 규칙(`보충만`/`신규 제외`, `안전 재고 N일`) 위에 모델 해석을 얹는다. 바꿀 수 있는 기준값은
-  `no_new_specs, safety_days(3~30), rounding_unit(50~1000), gate.CATALOG.monthly_saving·share_pct·delta_fill`.
+  `no_new_specs, no_custom, safety_days(3~30), rounding_unit(50~1000), gate.CATALOG.monthly_saving·share_pct·delta_fill,
+  gate.CUSTOM.monthly_saving·payback_m`.
   그 밖의 요청은 '확인 필요'에 "담당자 처리 필요"로 적는다.
 - ① 과거 제안: 같은 규격을 지난 제안에서도 냈는데 아직 미등록이면 '확인 필요'에 표시하고,
   지난 제안의 예측 출고와 그 달 실제 출고를 비교해 적는다.
@@ -157,7 +158,7 @@ business-mcp 는 **DB 에 직접 접근하지 않고** Spring `/internal/v1/**` 
 | `GET /warehouses` | list_warehouses |
 | `GET /warehouses/{id}/box-specs?activeOnly=` | list_box_specs, get_box_inventory |
 | `GET /warehouses/{id}/event-stats` | 모든 조회의 meta(입력 기준 시각·status별 건수·PENDING 수) |
-| `GET /warehouses/{id}/product-shipments?from&to&statuses` | list_product_fits |
+| `GET /warehouses/{id}/product-shipments?from&to&statuses` | list_product_fits (치수·`weightG`·출고 수) |
 | `GET /warehouses/{id}/monthly-shipments?fromMonth&toMonth&statuses` | get_shipment_history |
 | `GET /warehouses/{id}/purchase-orders?from&to` | list_purchase_orders |
 | `GET /warehouses/{id}/procurement-proposals?limit` | list_past_proposals |
@@ -199,6 +200,34 @@ psql "$DB" -f sql/box_spec_seed.sql
 python tests/fake_boxking.py 8765 &
 BOXKING_BASE_URL=http://127.0.0.1:8765 BOXKING_MIN_DELAY=0 CATALOG_DB=test.db python mcp_servers/catalog_server.py --refresh
 ```
+
+## 맞춤 제작 제안 (유팩 참고 견적)
+- 언제: ① 군집에 커버율 80% 이상인 박스왕 기성품이 없을 때 → 군집 P90 이상 치수(`ideal_box_dims`)로 `CUSTOM` 후보,
+  ② 보유 규격 어디에도 안 들어가는 상품이 있을 때 → 그 상품들이 모두 들어가는 치수 1종(`custom_unfit`)
+- 견적: `quote_custom_box(dims, qty)` (`mcp_servers/custom_quote_server.py`). 유팩 견적 계산기 화면이 쓰는 내부 엔드포인트
+  (`/goods/ordermade_estimate_carton_ajax.asp`)에 A형·B골·기성품 재질·무인쇄·직접 수령·내경 기준으로 묻는다.
+  수량 = 대상 출고 월평균(90일 ÷ 3, 100개 단위 올림). 결과: 요청 수량 단가, 수량 구간별 단가표, 판비+목형비(`initCost`), 납기 예정일. VAT 별도
+- robots.txt 확인, 요청 간격 10초(`UPACKAGE_MIN_DELAY`), 같은 치수·수량은 하루 캐시(`catalog.db`의 `custom_quotes`, `UPACKAGE_CACHE_HOURS`).
+  compose 에서는 `/app` 이 쓰기 불가라 `UPACKAGE_CACHE_DB=/app/proposals/custom_quotes.db`(볼륨). 캐시를 못 써도 견적은 돌려준다.
+  `CUSTOM_QUOTE=0` 이면 견적을 묻지 않는다
+- 공식 API 가 아니라 사이트가 바뀌면 실패한다 → 후보에서 빼고 '확인 필요'에 "담당자 견적 필요"로 적는다(작업은 계속)
+- 게이트 `gate.CUSTOM`: 월 절감 30만 원·출고 비중 3%·충진율 +10%p + 초기비 회수 6개월(`payback_m`).
+  ② 안 들어가는 상품용은 게이트 없이 주문에 넣고(그 상품 출고도 소모량에 포함) 담당자 결정을 '확인 필요'에 적는다
+- 견적 두 번: 1차는 후보 선정용(월평균 수량), plan_order 뒤 2차는 확정 제안 수량으로 다시 받아 주문표 단가·금액·합계에 쓴다.
+  2차가 실패하면 1차 단가를 두고 '단가 재확인 필요'. 2차 단가로 게이트를 다시 심사하지는 않는다
+- '확인 필요': 견적일·제안 수량 단가(1차 단가 병기)·초기비, 납기. 초기비(판비·목형비)는 주문 합계에 넣지 않고 따로 적는다
+- 반려로 끌 수 있다: `no_custom`(키워드 "맞춤 제외"), `gate.CUSTOM.monthly_saving`, `gate.CUSTOM.payback_m`
+- 저장: `summary.newSpecs` 에 `type` = `CUSTOM` / `CUSTOM_UNFIT`, `quote`(1차), `orderQuote`(2차), `initCost`
+- 단독 확인: `python mcp_servers/custom_quote_server.py --quote 300 200 150 1000`
+
+## 운임 (경동 정기화물)
+- 운임표: `mcp_servers/templates/kyungdong_regular_freight.md`(`FREIGHT_TABLE`, 2026-10-22 추출). 실행할 때 md 표를 읽는다
+- 1건 운임: 50,000㎤ 이하(소화물)는 소화물 표준운임(부피)만, 그 위는 경동 부피요율표(㎤)와 무게 운임(중대형화물 표준운임 → 운임표 4, kg) 중
+  높은 금액. 부피 = 배정 박스 내치수(외치수 없음), 무게 = 상품 실중량(`product.weight_g`, 박스 무게 제외). 무게가 없으면 부피 운임만
+- 표 문구("부피 및 무게 운임 중 높은 금액")를 소화물에도 그대로 적용하면 무게표 최저 4,500원 때문에 소화물 3,000~4,000원 구간이
+  쓰이지 않는다 → 운영 판단(2026-10-22)으로 소화물은 부피 운임 우선. 문구 그대로 계산은 `FREIGHT_MODE=max`
+- 쓰는 곳: `simulate_boxset` 월 절감(박스비 + 운임) → 신규 규격 게이트, 제안서 '신규 규격 도입 효과'의 `월 운임`·`월 박스비 + 운임` 줄과
+  `운임 기준` 문장(`freightBasis`)
 
 ## 들어가는지 판정·충진율 (packing-engine)
 - 상품 치수를 6방향 회전(90도)으로 먼저 본다.

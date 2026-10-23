@@ -14,6 +14,9 @@
 - gate.CATALOG.monthly_saving (int, 0~5000000): 신규 규격 월 절감액 기준(원)
 - gate.CATALOG.share_pct (number, 0~50): 신규 규격 대상 출고 비중 기준(%)
 - gate.CATALOG.delta_fill (number, 0~50): 신규 규격 충진율 개선 기준(%p)
+- no_custom (bool): 맞춤 제작(유팩 견적) 규격 없이 기성품만
+- gate.CUSTOM.monthly_saving (int, 0~5000000): 맞춤 제작 규격 월 절감액 기준(원)
+- gate.CUSTOM.payback_m (number, 0~36): 맞춤 제작 판비·목형비 회수 기간 기준(개월)
 
 # 판단 원칙
 - 의견에 숫자가 있으면 그 숫자를 씁니다. 숫자가 없는 방향 표현("넉넉하게")은 근거 규정이나 과거 기록의 값을 씁니다.

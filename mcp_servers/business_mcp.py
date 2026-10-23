@@ -1,11 +1,12 @@
 """
 business-mcp — 박스 주문 제안 업무 도구 서버 (조회·계산·제안 저장)
 
-도구는 모듈별로 나눠 두고(wms_server, catalog_server, packing_server, forecast_server, proposal_server)
+도구는 모듈별로 나눠 두고(wms_server, catalog_server, custom_quote_server, packing_server, forecast_server, proposal_server)
 이 서버가 한 곳에서 노출한다. 업무 데이터는 Spring 내부 API(/internal/v1/**)로만 읽고 쓴다(chagok_api.py).
 
   조회   list_warehouses, list_box_specs, list_product_fits, get_box_inventory, get_shipment_history,
-         list_purchase_orders, search_catalog, catalog_status, get_template, list_past_proposals
+         list_purchase_orders, search_catalog, catalog_status, get_template, list_past_proposals,
+         quote_custom_box(유팩 맞춤 제작 참고 견적)
   계산   analyze_fill_rate, diagnose_inefficiency, find_misfit_clusters, ideal_box_dims, coverage,
          simulate_boxset, plan_order, forecast_shipments, render_proposal
   변경   save_proposal, refresh_catalog            (destructiveHint — 에이전트는 승인 뒤에만 부른다)
@@ -23,13 +24,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 
 import catalog_server  # noqa: E402
+import custom_quote_server  # noqa: E402
 import forecast_server  # noqa: E402
 import packing_server  # noqa: E402
 import proposal_server  # noqa: E402
 import wms_server  # noqa: E402
 from mcp_common import serve  # noqa: E402
 
-MODULES = [wms_server, catalog_server, packing_server, forecast_server, proposal_server]
+MODULES = [wms_server, catalog_server, custom_quote_server, packing_server, forecast_server, proposal_server]
 
 
 def compose(name: str, modules: list) -> FastMCP:
