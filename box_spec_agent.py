@@ -46,6 +46,8 @@ import llm_writer
 
 KST = timezone(timedelta(hours=9))
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE / "mcp_servers"))
+import policy_rules  # noqa: E402  반려로 바꿀 수 있는 규칙 목록·검증(실제 적용값은 get_policy_rules 로 받는다)
 MCP_SERVERS = {   # 이름: (stdio 스크립트, HTTP 주소 환경변수)
     "business": (HERE / "mcp_servers" / "business_mcp.py", "BUSINESS_MCP_URL"),
     "rag": (HERE / "mcp_servers" / "rag_mcp.py", "RAG_MCP_URL"),
@@ -193,6 +195,7 @@ class AgentState(TypedDict, total=False):
     review: dict                              # score, feedback, loop_count
     approval: dict                            # status, comment
     past_proposals: list                      # 같은 센터 과거 제안(이번 jobId 제외)
+    rules: dict                               # 적용 규칙 버전·센터 덮어쓰기·규칙별 값(제안 summary 에 남김)
     llm: dict                                 # 문장 작성에 LLM을 썼는지, facts 숫자
     sources: dict                             # 이번 작업에서 rag 도구로 실제 찾은 근거 {sourceId: {title, uri}}
     citations: dict                           # ⑧ 규정 인용 캐시 {key, checks}
@@ -261,23 +264,22 @@ def cats(c: dict, k: int = 2) -> str:
 # ---------------------------------------------------------------------------
 # Nodes
 # ---------------------------------------------------------------------------
-def default_config(job: dict) -> dict:
-    return {
-        "margin_mm": 0, "allow_tilt": False, "tilt_clearance_mm": 0, "low_fill_pct": 45, "max_loops": 3, "eval_pass": 80, "max_clusters": 5,
-        "sku_max_fill_pct": 20, "sku_min_share_pct": 1.0, "sku_limit": 5,
-        "safety_days": 7, "rounding_unit": 100, "lookback_days": 90,
-        "gate": {
-            "CATALOG": {"monthly_saving": 300_000, "share_pct": 3, "delta_fill": 10},
-            "CUSTOM": {"monthly_saving": 300_000, "share_pct": 3, "delta_fill": 10, "payback_m": 6},
-        },
-        "no_new_specs": False, "no_custom": False,
-        "demo_eval_loop": job.get("demoEvalLoop", False),
-    }
+def default_config(job: dict, rule_values: dict) -> dict:
+    """판단 숫자는 규칙(get_policy_rules)에서만 온다. 여기 남은 값은 실행 제어용(규정 아님)"""
+    cfg = {"allow_tilt": False, "tilt_clearance_mm": 0, "max_loops": 3, "eval_pass": 80,
+           "demo_eval_loop": job.get("demoEvalLoop", False)}
+    for k, v in rule_values.items():
+        cfg = _cfg_set(cfg, k, v)
+    return cfg
 
 
 async def load_context(state: AgentState):
     job = state["job"]
-    cfg = default_config(job)
+    rules = await mcp_call("load_context", "business", "get_policy_rules", warehouse_id=job["warehouseId"])
+    cfg = default_config(job, rules["values"])
+    log("load_context", f"판단 규칙 v{rules['version']} ({rules['updatedAt']})"
+                        + (f", 센터 덮어쓰기 {rules['overrides']}" if rules["overrides"] else "")
+                        + (f", 버린 덮어쓰기 {rules['rejected']}" if rules["rejected"] else ""))
     log("load_context", f"job={job['jobId']} warehouse={job['warehouseId']} ({job.get('warehouseName', '')}) "
                         f"targetMonth={job['targetMonth']}")
     pol = await mcp_call("load_context", "business", "get_matching_policy")   # 서버 상품 매칭과 같은 판정 기준
@@ -288,7 +290,8 @@ async def load_context(state: AgentState):
     past = [x for x in past["items"] if x.get("jobId") != job["jobId"]]
     log("load_context", f"과거 제안 {len(past)}건 (에이전트 {sum(x['source'] == 'box-agent' for x in past)}건, "
                         f"신규 규격 제안 {sum(len(x['newSpecs']) for x in past)}건)")
-    return {"config": cfg, "review": {"score": 0, "feedback": [], "loop_count": 0}, "past_proposals": past,
+    return {"config": cfg, "rules": {k: rules[k] for k in ("version", "updatedAt", "overrides", "rows")},
+            "review": {"score": 0, "feedback": [], "loop_count": 0}, "past_proposals": past,
             "approval": {"status": "PENDING"}, "messages": ["load_context"]}
 
 
@@ -399,7 +402,7 @@ async def gen_candidates(state: AgentState):
             min_inner_dims=[v + m for v in c["p50"]],
             # 단일 품목은 납작·길쭉한 상품이 많아 이상 치수의 2배 상한이 너무 좁다 → 지금 박스보다 작기만 하면 본다
             max_volume_mm3=_vol(specs[c["from_box"]]["dims"]) - 1 if c.get("scope") == "SKU"
-            else min(_vol(specs[c["from_box"]]["dims"]) - 1, 2 * _vol(ideal)), limit=50,
+            else min(_vol(specs[c["from_box"]]["dims"]) - 1, cfg["cluster_vol_cap_x"] * _vol(ideal)), limit=50,
             exclude_refs=[b["catalogRef"] for b in state["box_specs"] if b.get("catalogRef")])
         if hits.get("note"):
             log("gen_candidates", f"{c['clusterId']} 기성품: {hits['note']}")
@@ -408,7 +411,7 @@ async def gen_candidates(state: AgentState):
                                   products=prods, box_dims=it["dims"], margin_mm=m,
                                   allow_tilt=cfg["allow_tilt"],
                                   tilt_clearance_mm=cfg["tilt_clearance_mm"]))["coverage_pct"]
-            if cov >= 80:
+            if cov >= cfg["coverage_pct"]:
                 cands.append({"candId": f"{c['clusterId']}-CAT", "cluster": c["clusterId"], "type": "CATALOG",
                               "scope": c.get("scope", "CLUSTER"), "productIds": c["productIds"],
                               "code": f"N-{it['name']}", "name": it["name"], "dims": it["dims"],
@@ -1046,14 +1049,8 @@ def human_review(state: AgentState):
 
 
 # 반려 의견으로 바꿀 수 있는 기준값(화이트리스트): key → (형, 최소, 최대)
-FEEDBACK_KEYS = {
-    "no_new_specs": (bool, None, None),    # 기울임 판정은 서버 매칭 정책(chagok.matching)을 따르므로 반려로 바꾸지 않는다
-    "safety_days": (int, 3, 30), "rounding_unit": (int, 50, 1000),
-    "gate.CATALOG.monthly_saving": (int, 0, 5_000_000), "gate.CATALOG.share_pct": (float, 0, 50),
-    "gate.CATALOG.delta_fill": (float, 0, 50),
-    "no_custom": (bool, None, None), "gate.CUSTOM.monthly_saving": (int, 0, 5_000_000),
-    "gate.CUSTOM.payback_m": (float, 0, 36),
-}
+# 반려 의견으로 바꿀 수 있는 규칙(규칙 파일의 feedback: true). 형·범위 검증도 규칙 파일 기준
+FEEDBACK_KEYS = {k: r for k, r in policy_rules.load_rules()["rules"].items() if r.get("feedback")}
 INTERP_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["changes", "unsupported", "sources"],
                  "properties": {
                      "changes": {"type": "array", "items": {
@@ -1077,22 +1074,14 @@ def _cfg_set(cfg: dict, key: str, value) -> dict:
     *path, last = key.split(".")
     node = cfg
     for k in path:
-        node = node[k]
+        node = node.setdefault(k, {})          # 규칙 키 'gate.CATALOG.x' 로 처음 만들 때도 쓴다
     node[last] = value
     return cfg
 
 
 def _parse_value(key: str, raw: str):
-    """화이트리스트 형·범위 검증. 맞지 않으면 ValueError (Guardrail)"""
-    typ, lo, hi = FEEDBACK_KEYS[key]
-    if typ is bool:
-        if str(raw).strip().lower() not in ("true", "false"):
-            raise ValueError(f"{key}: true/false 가 아님({raw})")
-        return str(raw).strip().lower() == "true"
-    v = typ(float(str(raw).replace(",", "")))
-    if not lo <= v <= hi:
-        raise ValueError(f"{key}: 허용 범위 {lo}~{hi} 밖({v})")
-    return v
+    """화이트리스트 형·범위 검증(규칙 파일 range). 맞지 않으면 ValueError (Guardrail)"""
+    return policy_rules.cast(FEEDBACK_KEYS[key], raw)
 
 
 async def interpret_feedback(state: AgentState):
