@@ -187,7 +187,8 @@ class AgentState(TypedDict, total=False):
     custom_effect: dict | None                # 안 들어가는 상품용 맞춤 규격으로 담을 때의 월 적재량
     order_plan: dict                          # 규격별 제안 수량·금액
     template: dict                            # 회사 양식
-    proposal_md: str                          # 제안서 본문
+    proposal_md: str                          # 제안서 본문 (회사 양식 markdown, 검토·평가 대상)
+    proposal_html: str                        # 보기용 HTML 제안서 (templates/box_order_proposal.html)
     client_view: dict                         # client BoxOrderView(mocks/orders.js proposal) 모양
     review: dict                              # score, feedback, loop_count
     approval: dict                            # status, comment
@@ -712,6 +713,61 @@ def _effect(state: AgentState, sel: list) -> tuple[str, list[dict]]:
     return basis, rows
 
 
+def _html_data(state: AgentState, values: dict, sel: list, checks: list[str], reasons: list[str], mom: dict,
+               yoy: dict) -> dict:
+    """보기용 HTML 제안서 입력 (proposal_server.render_proposal_html). 숫자는 모두 툴 결과·_effect 와 같은 출처"""
+    job, fc, plan = state["job"], state["forecast"], state["order_plan"]
+    custom_codes = {c["code"] for c in state["candidates"] if c["type"] == "CUSTOM"} | (
+        {state["custom_unfit"]["code"]} if state.get("custom_unfit") else set())
+    comb, recent = state.get("sim_combined"), state.get("recent_effect")
+    block, title = (comb, ", ".join({c["candId"]: c for c in state["candidates"]}[x["candId"]]["name"] for x in sel)) \
+        if sel and comb else (recent, ", ".join(recent["codes"])) if recent else (None, "")
+    eff, profit = None, {"monthly": None, "note": "이번 제안으로 줄어드는 박스비·운임 없음"}
+    kpis = [{"label": f"{int(job['targetMonth'][5:])}월 예상 출고", "value": f"{n(fc['forecast'])}건",
+             "sub": f"전년 동월 대비 {(fc['forecast'] / fc['sameMonthLastYear'] - 1) * 100:+.1f}%"
+             if fc.get("sameMonthLastYear") else fc["method"]}]
+    if block:
+        b, a = block["load"]["before"], block["load"]["after"]
+        saving = b["box_krw"] + b["freight_krw"] - a["box_krw"] - a["freight_krw"]
+        if saving > 0:
+            profit = {"monthly": saving, "note": f"연 환산 {n(saving * 12)}원 · 박스비 + 운임 절감"}
+        frm = "·".join(block["load"]["fromBoxes"])
+        eff = {"subtitle": f"{title} · 대상 월 {n(b['shipments'])}건 (기존 {frm})",
+               "cost": [[f"도입 전 ({frm})", b["box_krw"], b["freight_krw"]], [f"도입 후 ({title})", a["box_krw"], a["freight_krw"]]],
+               "rows": [["월 박스비 + 운임", f"{'−' if saving > 0 else '+'}{n(abs(saving))}원 "
+                                          f"({_pct(b['box_krw'] + b['freight_krw'], a['box_krw'] + a['freight_krw'])})", saving > 0],
+                        ["월 운임", f"{'−' if a['freight_krw'] < b['freight_krw'] else '+'}{n(abs(b['freight_krw'] - a['freight_krw']))}원", False],
+                        ["월 박스비", f"{'−' if a['box_krw'] < b['box_krw'] else '+'}{n(abs(b['box_krw'] - a['box_krw']))}원", False],
+                        ["월 박스 적재 부피", f"{b['box_m3']} → {a['box_m3']}m³", False]]
+                       + ([["센터 전체 충진율", f"{block['overall_fill_before']} → {block['overall_fill_after']}%", False]]
+                          if block.get("overall_fill_before") is not None else [])}
+        kpis.append({"label": "대상 출고 충진율", "value": f"{b['fill']} → {a['fill']}%", "sub": f"{a['fill'] - b['fill']:+.1f}%p",
+                     "up": a["fill"] > b["fill"]})
+        if block.get("overall_fill_before") is not None:
+            ob, oa = block["overall_fill_before"], block["overall_fill_after"]
+            kpis.append({"label": "센터 전체 충진율", "value": f"{ob} → {oa}%", "sub": f"{oa - ob:+.1f}%p", "up": oa > ob})
+    kpis.append({"label": "수요예측 정확도", "value": f"{fc['accuracy_pct']}%" if fc.get("accuracy_pct") is not None else "미산출",
+                 "sub": "최근 6개월 백테스트"})
+    custom = None
+    if (ce := state.get("custom_effect")) and (cu := state.get("custom_unfit")):
+        oq = (state.get("order_quotes") or {}).get(cu["code"]) or cu["quote"]
+        custom = {"title": cu["name"], "subtitle": f"포장 불가하던 월 {n(ce['shipments'])}건",
+                  "rows": [["박스 단가", "—", f"{n(oq['unitPrice'])}원 (유팩 참고 견적)"],
+                           ["대상 출고 충진율", "포장 불가", f"{ce['fill']}%"],
+                           ["월 박스비 · 운임", "—", f"{n(round(ce['box_krw'] * oq['unitPrice'] / cu['price']))}원 · "
+                                                    f"{n(ce['freight_krw'])}원"]]}
+    rows = [{**{k: r[k] for k in ("label", "currentQty", "expectedUsage", "safetyQty", "proposedQty", "amount")},
+             "isNew": r["isNew"], "isCustom": r["code"] in custom_codes} for r in plan["orderRows"]]
+    method = [reasons[3], "도입 효과·예상 이익은 최근 90일 출고의 월평균, 연 환산 = 월 × 12", FREIGHT_BASIS,
+              f"전월({values['prevMonthLabel']} 발주 {values['prevMonthAmount']}) {mom['sign']} {mom['rate']}%, "
+              f"전년 동월({values['lastYearLabel']} 발주 {values['lastYearAmount']}) {yoy['sign']} {yoy['rate']}%",
+              f"입력 기준 {state['data_meta']['inputAsOf']}"]
+    return {"warehouseName": job.get("warehouseName", ""), "targetMonth": job["targetMonth"],
+            "periodStart": values["periodStart"], "periodEnd": values["periodEnd"], "orderRows": rows,
+            "totals": plan["totals"], "skipped": plan["skipped"], "profit": profit, "kpis": kpis[:4],
+            "effect": eff, "custom": custom, "details": {"checks": checks, "rationale": reasons[:3], "method": method}}
+
+
 async def write_proposal(state: AgentState):
     """근거·확인 항목: 규칙 기반 문장(수치는 툴 결과에서만) → 자격 증명이 있으면 LLM이 문장만 다듬는다"""
     tpl = state.get("template") or await mcp_call("write_proposal", "business", "get_template")
@@ -812,6 +868,10 @@ async def write_proposal(state: AgentState):
 
     r = await mcp_call("write_proposal", "business", "render_proposal", values=values, rows=rows, check_items=checks,
                        effect_rows=effect_rows)
+    h = await mcp_call("write_proposal", "business", "render_proposal_html",
+                       data=_html_data(state, values, sel, checks, [reason1, reason2, reason3, formula], mom, yoy))
+    if h["missing"]:
+        log("write_proposal", f"HTML 제안서 미기입 {h['missing']}")
 
     # client BoxOrderView 가 쓰는 모양 (client/src/mocks/orders.js: orderPeriod, proposal, purchaseOrderDraft.items)
     specs = {b["code"]: b for b in state["box_specs"]}
@@ -842,7 +902,7 @@ async def write_proposal(state: AgentState):
     client_view["sources"] = [{"sourceId": k, **v} for k, v in sources.items()]
     for i in range(0, len(r["markdown"]), 400):          # 화면 답변 영역(TOKEN). 초안마다 draft 번호로 구분
         harness.emit("TOKEN", draft=rv["loop_count"], text=r["markdown"][i:i + 400])
-    return {"template": tpl, "proposal_md": r["markdown"], "client_view": client_view, "review": rv, "llm": llm,
+    return {"template": tpl, "proposal_md": r["markdown"], "proposal_html": h["html"], "client_view": client_view, "review": rv, "llm": llm,
             "citations": citations, "sources": sources, "messages": ["write_proposal"]}
 
 
@@ -1104,6 +1164,7 @@ async def save_result(state: AgentState):
         "rejections": state.get("rejections") or [],
         "harness": harness.summary(),
         "bodyMarkdown": state["proposal_md"],
+        "bodyHtml": state.get("proposal_html"),
     }
     r = await mcp_call("save_result", "business", "save_proposal", payload=payload)
     d = r["db"]
@@ -1193,7 +1254,7 @@ async def run_until_pause(app, payload, cfg: dict) -> dict:
                      totalAmount=out["order_plan"]["totals"]["amount"], qty=out["order_plan"]["totals"]["qty"],
                      score=out["review"]["score"], newSpecs=[r["code"] for r in out["sim_results"] if r["selected"]],
                      sources=[{"sourceId": k, **v} for k, v in (out.get("sources") or {}).items()],
-                     proposalMarkdown=out["proposal_md"])
+                     proposalMarkdown=out["proposal_md"], proposalHtml=out.get("proposal_html"))
     return out
 
 
