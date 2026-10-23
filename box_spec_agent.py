@@ -410,7 +410,7 @@ async def gen_candidates(state: AgentState):
                                   tilt_clearance_mm=cfg["tilt_clearance_mm"]))["coverage_pct"]
             if cov >= 80:
                 cands.append({"candId": f"{c['clusterId']}-CAT", "cluster": c["clusterId"], "type": "CATALOG",
-                              "scope": c.get("scope", "CLUSTER"),
+                              "scope": c.get("scope", "CLUSTER"), "productIds": c["productIds"],
                               "code": f"N-{it['name']}", "name": it["name"], "dims": it["dims"],
                               "price": it["price"], "moq": it["moq"], "ref": f"{it['supplier']}:{it['goodsNo']}",
                               "coverage": cov, "init_cost": 0})
@@ -425,7 +425,7 @@ async def gen_candidates(state: AgentState):
                                   margin_mm=m, allow_tilt=cfg["allow_tilt"],
                                   tilt_clearance_mm=cfg["tilt_clearance_mm"]))["coverage_pct"]
             cands.append({"candId": f"{c['clusterId']}-CUS", "cluster": c["clusterId"], "type": "CUSTOM",
-                          "scope": c.get("scope", "CLUSTER"),
+                          "scope": c.get("scope", "CLUSTER"), "productIds": c["productIds"],
                           "code": f"N-맞춤 {dims_s(ideal)}", "name": f"맞춤 {dims_s(ideal)}", "dims": ideal,
                           "price": q["unitPrice"], "moq": 1, "ref": f"upackage:{q['spec']}", "coverage": cov,
                           "init_cost": q["initCost"], "quote": q})
@@ -668,6 +668,12 @@ def _won_change(b, a) -> str:
     return f"{'−' if a < b else '+'}{n(abs(a - b))}원 ({_pct(b, a)})"
 
 
+def _saving_change(block: dict, before_total: int) -> str:
+    """월 박스비 + 운임 변화 — 예상 이익과 같은 값(block.monthly_saving)을 쓴다. 적재량 합계로 다시 빼지 않는다(반올림 차이 방지)"""
+    sv = block["monthly_saving"]
+    return f"{'−' if sv > 0 else '+'}{n(abs(sv))}원 ({_pct(before_total, before_total - sv)})"
+
+
 def _load_rows(comb: dict, before_price: str, after_price: str) -> list[dict]:
     """배정이 바뀌는 출고의 전/후 비교 행 (simulate_boxset.combined · compare_boxsets 결과)"""
     b, a = comb["load"]["before"], comb["load"]["after"]
@@ -682,8 +688,8 @@ def _load_rows(comb: dict, before_price: str, after_price: str) -> list[dict]:
         {"metric": "월 운임(경동 정기화물)", "before": f"{n(b['freight_krw'])}원", "after": f"{n(a['freight_krw'])}원",
          "change": _won_change(b["freight_krw"], a["freight_krw"])},
         {"metric": "월 박스비 + 운임", "before": f"{n(b['box_krw'] + b['freight_krw'])}원",
-         "after": f"{n(a['box_krw'] + a['freight_krw'])}원",
-         "change": _won_change(b["box_krw"] + b["freight_krw"], a["box_krw"] + a["freight_krw"])},
+         "after": f"{n(b['box_krw'] + b['freight_krw'] - comb['monthly_saving'])}원",      # 전 − 절감액 (예상 이익과 같은 값)
+         "change": _saving_change(comb, b["box_krw"] + b["freight_krw"])},
     ]
     if comb.get("overall_fill_before") is not None:
         rows.append({"metric": "센터 전체 충진율", "before": f"{comb['overall_fill_before']}%",
@@ -746,14 +752,14 @@ def _html_data(state: AgentState, values: dict, sel: list, checks: list[str], re
              if fc.get("sameMonthLastYear") else fc["method"]}]
     if block:
         b, a = block["load"]["before"], block["load"]["after"]
-        saving = b["box_krw"] + b["freight_krw"] - a["box_krw"] - a["freight_krw"]
+        saving = block["monthly_saving"]          # 예상 이익 = 시뮬레이션 절감액 하나 (근거 문장·md 표와 같은 값)
         if saving > 0:
             profit = {"monthly": saving, "note": f"연 환산 {n(saving * 12)}원 · 박스비 + 운임 절감"}
         frm = "·".join(block["load"]["fromBoxes"])
         eff = {"subtitle": f"{title} · 대상 월 {n(b['shipments'])}건 (기존 {frm})",
                "cost": [[f"도입 전 ({frm})", b["box_krw"], b["freight_krw"]], [f"도입 후 ({title})", a["box_krw"], a["freight_krw"]]],
                "rows": [["월 박스비 + 운임", f"{'−' if saving > 0 else '+'}{n(abs(saving))}원 "
-                                          f"({_pct(b['box_krw'] + b['freight_krw'], a['box_krw'] + a['freight_krw'])})", saving > 0],
+                                          f"({_pct(b['box_krw'] + b['freight_krw'], b['box_krw'] + b['freight_krw'] - saving)})", saving > 0],
                         ["월 운임", f"{'−' if a['freight_krw'] < b['freight_krw'] else '+'}{n(abs(b['freight_krw'] - a['freight_krw']))}원", False],
                         ["월 박스비", f"{'−' if a['box_krw'] < b['box_krw'] else '+'}{n(abs(b['box_krw'] - a['box_krw']))}원", False],
                         ["월 박스 적재 부피", f"{b['box_m3']} → {a['box_m3']}m³", False]]
@@ -809,17 +815,29 @@ async def write_proposal(state: AgentState):
         reason1 += (f", 전년 동월 {n(fc['sameMonthLastYear'])}건 대비 "
                     f"{(fc['forecast'] / fc['sameMonthLastYear'] - 1) * 100:+.1f}%")
     if sel:
+        # 숫자 규칙: 예상 이익은 sim_combined.monthly_saving 하나만, 단일 품목 충진율은 그 품목(anchor) 값만
         s = sel[0]
         c = cl[s["cluster"]]
         cd0 = {x["candId"]: x for x in state["candidates"]}
-        what = f"단일 품목 {c['name']}" if c.get("scope") == "SKU" else f"{cats(c)} 구간"
-        reason2 = (f"신규 규격 {cd0[s['candId']]['name']} {dims_s(s['dims'])} 도입: {what}"
-                   f"(출고 비중 {c['share_pct']}%)이 "
-                   f"{c['from_box']}에 담겨 충진율 {s['target_fill_before']}% → {s['target_fill_after']}%로 개선, "
-                   f"월 박스비·운임 약 {n(s['monthly_saving'])}원 절감. {', '.join(s['replaces'])} 예상 소모는 그만큼 줄여 반영")
+        comb0 = state.get("sim_combined") or {}
+        saving = comb0.get("monthly_saving", s["monthly_saving"])
+        anchor = [r for r in s.get("moved", []) if r["anchor"]]
+        others = [r for r in s.get("moved", []) if not r["anchor"]]
+        if c.get("scope") == "SKU" and anchor:
+            a = anchor[0]
+            what = (f"단일 품목 {a['name']}(월 {n(round(a['qty90d'] / 3))}건)이 {a['from']}에 담겨 충진율 "
+                    f"{a['fill_before']}% → {a['fill_after']}%로 개선")
+        else:
+            what = (f"{cats(c)} 구간(출고 비중 {c['share_pct']}%)이 {c['from_box']}에 담겨 충진율 "
+                    f"{s['target_fill_before']}% → {s['target_fill_after']}%로 개선")
+        reason2 = f"신규 규격 {cd0[s['candId']]['name']} {dims_s(s['dims'])} 도입: {what}"
+        if others:
+            reason2 += (f". 더 작은 박스가 생겨 {', '.join(r['name'] for r in others[:3])}"
+                        + (f" 외 {len(others) - 3}개" if len(others) > 3 else "") + " 상품도 함께 옮겨 감")
         if len(sel) > 1:
-            reason2 += (f". 그 밖에 {', '.join(cd0[x['candId']]['name'] for x in sel[1:])}도 도입 "
-                        f"(추가 월 절감 {n(sum(x.get('marginal_saving', x['monthly_saving']) for x in sel[1:]))}원)")
+            reason2 += f". 그 밖에 {', '.join(cd0[x['candId']]['name'] for x in sel[1:])}도 도입"
+        reason2 += (f". 선정 규격 전체로 월 박스비·운임 약 {n(saving)}원 절감, "
+                    f"{', '.join(sorted({r for x in sel for r in x['replaces']}))} 예상 소모는 그만큼 줄여 반영")
     else:
         reason2 = "신규 규격 후보가 도입 기준(월 절감·충진율 개선)을 넘지 못해 기존 규격만 보충"
     if state.get("custom_unfit"):
