@@ -480,8 +480,7 @@ async def plan_order(state: AgentState):
     if cu:                               # 안 들어가던 상품도 맞춤 규격으로 소모량을 잡는다
         new_specs.append({"code": cu["code"], "dims": cu["dims"], "price": cu["price"], "label": f"{cu['name']} (신규·맞춤)"})
         products = products + state["unfit_products"]
-    specs = [{**b, "label": " ".join(x for x in (b["code"], b.get("name") if b.get("name") != b["code"] else None,
-                                                  dims_s(b["dims"])) if x)} for b in state["box_specs"]]
+    specs = [{**b, "label": f"{b['code']} {dims_s(b['dims'])}"} for b in state["box_specs"]]
     y, m = map(int, tm.split("-"))
     r = await mcp_call("plan_order", "business", "plan_order",
                        products=products, box_specs=specs, new_specs=new_specs,
