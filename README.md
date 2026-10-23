@@ -17,7 +17,7 @@ Spring Boot ──내부 HTTP──▶ agent_server.py (FastAPI, LangGraph + Har
 | Agent 서버 | `agent_server.py` | 작업 실행(202)·SSE 진행 이벤트·승인 후 재개 | DB 업무 데이터를 직접 쓰지 않음(checkpointer만) |
 | 그래프 | `box_spec_agent.py` | ①~⑪ StateGraph. CLI 실행도 같은 그래프 | 숫자는 MCP 계산 도구만 만든다 |
 | Harness | `harness.py`, `prompts/*.md` | 한도·재시도·기록·마스킹·인용 대조 | 아래 'Harness' 표 |
-| business-mcp | `mcp_servers/business_mcp.py` | 조회·계산·제안 저장 26개 도구 (wms·catalog·custom_quote·packing·forecast·proposal 모듈) | DB 직접 접근 없음, Spring `/internal/v1/**` 호출 |
+| business-mcp | `mcp_servers/business_mcp.py` | 조회·계산·제안 저장 28개 도구 (wms·catalog·custom_quote·packing·forecast·proposal 모듈) | DB 직접 접근 없음, Spring `/internal/v1/**` 호출 |
 | rag-mcp | `mcp_servers/rag_mcp.py` | 규정·반려 기록 검색, Resource `policy://`·`feedback://` | 업무 데이터 변경 없음 |
 | Spring 내부 API | `server/chagok/.../domain/agent` | 에이전트용 조회·제안 저장, 센터·규격 소속 검증 | `X-Internal-Token`(INTERNAL_API_TOKEN), 세션·CSRF 없음 |
 
@@ -213,6 +213,20 @@ psql "$DB" -f sql/box_spec_seed.sql
 python tests/fake_boxking.py 8765 &
 BOXKING_BASE_URL=http://127.0.0.1:8765 BOXKING_MIN_DELAY=0 CATALOG_DB=test.db python mcp_servers/catalog_server.py --refresh
 ```
+
+## 판단 규칙 (rules/box_order_rules.yaml)
+- 판단에 쓰는 숫자는 이 파일 하나에만 둔다(게이트, 군집·단일 품목 기준, 규격 상한, 안전 재고, 반올림, 재고 상한 등 27개).
+  각 규칙: 값 · 단위 · 허용 범위 · scope(center = 센터별 조정 가능 / global = 전사 고정) · feedback(반려로 변경 가능) · 근거 조항
+- 에이전트는 시작할 때 business-mcp `get_policy_rules(warehouse_id)` 로 기본값 + 센터별 덮어쓰기(`rules/overrides/<warehouseId>.yaml`)를 받는다.
+  범위 밖·전사 고정 키의 덮어쓰기는 버리고 로그에 남긴다. 반려로 바꿀 수 있는 키·범위도 이 파일 기준
+- 규정 문서(`knowledge/policies/*.md`)의 `{규칙 키}` 자리는 rag 적재(`--ingest`)·원문 열람 때 규칙값으로 채운다 → 문서 숫자 = 판단 숫자.
+  **숫자를 바꿀 때는 규칙 파일만 고치고 `--ingest`** 를 다시 돌린다(문서 숫자를 직접 쓰지 않는다)
+- 점검: `python tests/policy_rules_check.py` — 문서의 키가 규칙에 있는지, 모든 규칙이 문서에 쓰이고 코드가 읽는지, 반려 지시문 목록이 맞는지
+- 제안 summary 에 `rules`(버전·센터 조정값·적용값), HTML 상세보기에 "판단 규칙 v1, 이 센터 조정값 …"
+- 나중에 DB(policy_rule, policy_rule_override)·본부장 화면으로 옮길 때는 `policy_rules.load_rules / load_overrides` 안쪽만 바꾼다
+- 규칙으로 들어간 정책: 활성 규격 상한(`spec_max_active`, 넘으면 사용 비중 `spec_deactivate_below_pct` 미만 비활성화 제안 → 그래도 넘으면
+  절감 작은 신규 제외, `check_spec_limit`), 재고 보관 상한(`max_stock_months`, `plan_order` overStock), 성수기 안전 재고(`peak_*`, 기본 끔),
+  전월 대비 금액 변동 사유(`mom_note_pct`)
 
 ## 신규 규격 후보 구간 (군집 + 단일 품목)
 - 군집 `find_misfit_clusters`: 저충진(45% 미만) 상품을 정렬 치수의 **로그**(납작·길쭉한 형태가 반영되게)로, **출고량 가중** k-means.
