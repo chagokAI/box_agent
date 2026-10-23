@@ -15,7 +15,7 @@ Spring Boot ──내부 HTTP──▶ agent_server.py (FastAPI, LangGraph + Har
 | Agent 서버 | `agent_server.py` | 작업 실행(202)·SSE 진행 이벤트·승인 후 재개 | DB 업무 데이터를 직접 쓰지 않음(checkpointer만) |
 | 그래프 | `box_spec_agent.py` | ①~⑪ StateGraph. CLI 실행도 같은 그래프 | 숫자는 MCP 계산 도구만 만든다 |
 | Harness | `harness.py`, `prompts/*.md` | 한도·재시도·기록·마스킹·인용 대조 | 아래 'Harness' 표 |
-| business-mcp | `mcp_servers/business_mcp.py` | 조회·계산·제안 저장 25개 도구 (wms·catalog·custom_quote·packing·forecast·proposal 모듈) | DB 직접 접근 없음, Spring `/internal/v1/**` 호출 |
+| business-mcp | `mcp_servers/business_mcp.py` | 조회·계산·제안 저장 26개 도구 (wms·catalog·custom_quote·packing·forecast·proposal 모듈) | DB 직접 접근 없음, Spring `/internal/v1/**` 호출 |
 | rag-mcp | `mcp_servers/rag_mcp.py` | 규정·반려 기록 검색, Resource `policy://`·`feedback://` | 업무 데이터 변경 없음 |
 | Spring 내부 API | `server/chagok/.../domain/agent` | 에이전트용 조회·제안 저장, 센터·규격 소속 검증 | `X-Internal-Token`(INTERNAL_API_TOKEN), 세션·CSRF 없음 |
 
@@ -125,7 +125,9 @@ python tests/knowledge_eval.py       # rag 검색 적중 (top-3, --k 1)
   렌더러 `render_proposal_html`(proposal_server). ⑧ write_proposal 이 회사 양식 md 와 함께 만든다
 - 구성: 요약 3줄(주문 개수 · 주문금액 · 예상 이익 월/연) → 숫자 4칸 → 규격별 제안 수량 → 도입 효과(박스비·운임 누적 막대) →
   예상 총 주문금액(규격별 막대) → 상세보기(확인 필요 · 근거 · 산출 방법, 전월·전년 비교는 여기에)
-- 예상 이익 = 도입 효과 블록의 월 박스비 + 운임 절감(맞춤 규격 제외), 연 환산 × 12. 숫자는 md 와 같은 툴 결과
+- 예상 이익 = 도입 효과 블록의 `monthly_saving`(선정 시 `sim_combined`, 없으면 등록 규격 `recent_effect`) 하나만 쓴다.
+  근거 문장·md 표·HTML 이 같은 값이고, 적재량 합계로 다시 빼지 않는다. 맞춤 규격 제외, 연 환산 × 12
+- 단일 품목 후보의 근거 문장은 `sim_results[].moved` 의 anchor 상품 값(충진율 전후·이전 박스)으로 쓰고, 함께 옮겨 가는 상품은 따로 적는다
 - 나가는 곳: `APPROVAL_REQUIRED.proposalHtml`, 저장 `summary.bodyHtml`, `./proposals/<jobId>.html`. ⑨ 평가는 md 로만 한다
 - 외부 라이브러리 없이 HTML 한 파일(인라인 SVG 차트·다크 모드). 차트 색은 색각 검사 통과 값 — 바꾸면 다시 검사
 
@@ -210,12 +212,23 @@ python tests/fake_boxking.py 8765 &
 BOXKING_BASE_URL=http://127.0.0.1:8765 BOXKING_MIN_DELAY=0 CATALOG_DB=test.db python mcp_servers/catalog_server.py --refresh
 ```
 
+## 신규 규격 후보 구간 (군집 + 단일 품목)
+- 군집 `find_misfit_clusters`: 저충진(45% 미만) 상품을 정렬 치수의 **로그**(납작·길쭉한 형태가 반영되게)로, **출고량 가중** k-means.
+  시작점 10번 중 오차 최소, 군집 수는 2~`max_clusters`(기본 5) 중 가중 실루엣 점수 최대
+- 단일 품목 `find_sku_candidates`: 충진율 20% 미만 · 출고 비중 1% 이상 상품을 낭비 부피 × 출고량 순으로 최대 5개(`sku_*` 설정).
+  군집에 묻히는 고출고 단일 품목(예: 키보드)을 따로 본다. 기성품 검색 부피 상한은 '지금 박스보다 작음'만(군집은 이상 치수 2배까지)
+- 단일 품목은 게이트에서 출고 비중(3%) 조건을 보지 않는다(월 절감·충진율 개선·회수 기간만)
+- 선정: 군집·단일 후보가 같은 출고를 두고 겹치므로 절감이 큰 순으로 넣으며 **이미 고른 것 위에 더 줄어드는 만큼**(`marginal_saving`)으로 다시 판정
+- 주의: 새 박스가 들어오면 그 박스가 '들어가는 가장 작은 박스'가 되는 다른 상품도 함께 옮겨 간다(서버 매칭 규칙과 같음).
+  작은 슬림 박스는 단가가 높아 오히려 손해가 되는 경우가 많고(운임은 2만㎤ 이하 3,000원 동일), 그런 후보는 게이트에서 떨어진다
+
 ## 맞춤 제작 제안 (유팩 참고 견적)
 - 언제: ① 군집에 커버율 80% 이상인 박스왕 기성품이 없을 때 → 군집 P90 이상 치수(`ideal_box_dims`)로 `CUSTOM` 후보,
   ② 보유 규격 어디에도 안 들어가는 상품이 있을 때 → 그 상품들이 모두 들어가는 치수 1종(`custom_unfit`)
 - 견적: `quote_custom_box(dims, qty)` (`mcp_servers/custom_quote_server.py`). 유팩 견적 계산기 화면이 쓰는 내부 엔드포인트
   (`/goods/ordermade_estimate_carton_ajax.asp`)에 A형·B골·기성품 재질·무인쇄·직접 수령·내경 기준으로 묻는다.
   수량 = 대상 출고 월평균(90일 ÷ 3, 100개 단위 올림). 결과: 요청 수량 단가, 수량 구간별 단가표, 판비+목형비(`initCost`), 납기 예정일. VAT 별도
+- 유팩 A형 최소 제작 크기(세로 80mm, 높이 50mm)보다 작은 치수는 그 크기까지 올려서 견적을 받는다(그보다 작으면 견적 거절)
 - robots.txt 확인, 요청 간격 10초(`UPACKAGE_MIN_DELAY`), 같은 치수·수량은 하루 캐시(`catalog.db`의 `custom_quotes`, `UPACKAGE_CACHE_HOURS`).
   compose 에서는 `/app` 이 쓰기 불가라 `UPACKAGE_CACHE_DB=/app/proposals/custom_quotes.db`(볼륨). 캐시를 못 써도 견적은 돌려준다.
   `CUSTOM_QUOTE=0` 이면 견적을 묻지 않는다
