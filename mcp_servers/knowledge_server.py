@@ -1,7 +1,7 @@
 """
 rag-mcp — 규정 문서·반려 기록 검색 (RAG). 실행 진입점은 rag_mcp.py
 
-- 자료: ../knowledge/policies/*.md (규정, '## ' 조항 단위로 자름), ../knowledge/feedback_cases.jsonl (반려 기록)
+- 자료: ../knowledge/policies/*.md (규정, '## ' 조항 단위로 자름. {규칙 키} 자리는 rules/box_order_rules.yaml 값으로 채움), ../knowledge/feedback_cases.jsonl (반려 기록)
 - 저장: DB_URL 이 있으면 서버 PostgreSQL 의 box_agent.knowledge 테이블(pgvector). 서버 엔티티에 매핑되지 않는
   별도 스키마라 서버(Hibernate)는 건드리지 않는다. DB_URL 이 없으면 파일을 읽어 메모리에서 검색한다.
 - 임베딩: OPENAI_API_KEY 가 있으면 OpenAI(KNOWLEDGE_EMBED_MODEL, 기본 text-embedding-3-small),
@@ -27,6 +27,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 import chagok_db as db
+import policy_rules
 
 mcp = FastMCP("rag", log_level="WARNING")
 HERE = Path(__file__).resolve().parent
@@ -89,7 +90,7 @@ def load_policies() -> list[dict]:
     """규정 md → 조항('## ') 단위 청크. 제목 줄의 (POL-xx) 가 문서 id"""
     out = []
     for f in sorted((KDIR / "policies").glob("*.md")):
-        text = f.read_text(encoding="utf-8")
+        text = policy_rules.render(f.read_text(encoding="utf-8"))   # {규칙 키} → 규칙값 (문서 숫자 = 판단 숫자)
         title = text.splitlines()[0].lstrip("# ").strip()
         doc_id = (re.search(r"\((POL-\d+)\)", title) or re.search(r"(POL-\d+)", f.name)).group(1)
         for sec in re.split(r"\n(?=## )", text)[1:]:
@@ -252,7 +253,7 @@ def policy_document(doc_id: str) -> str:
     f = _policy_files().get(doc_id.upper())
     if not f:
         raise ValueError(f"없는 규정: {doc_id}. 있는 규정: {', '.join(_policy_files())}")
-    return f.read_text(encoding="utf-8")
+    return policy_rules.render(f.read_text(encoding="utf-8"))
 
 
 @mcp.resource("feedback://{case_id}", name="feedback-case", mime_type="application/json",
