@@ -1009,6 +1009,8 @@ async def save_result(state: AgentState):
     spec = {b["code"]: b for b in state["box_specs"]}
     cd = {c["code"]: c for c in state["candidates"]}
     oq = state.get("order_quotes") or {}
+    custom_codes = {c["code"] for c in state["candidates"] if c["type"] == "CUSTOM"} | (
+        {state["custom_unfit"]["code"]} if state.get("custom_unfit") else set())
     sel = [r for r in state["sim_results"] if r["selected"]]
     payload = {
         "proposalId": job["proposalId"], "jobId": job["jobId"], "warehouseId": job["warehouseId"],
@@ -1018,7 +1020,10 @@ async def save_result(state: AgentState):
         "totalAmount": plan["totals"]["amount"], "totals": plan["totals"],
         "forecast": {k: state["forecast"][k] for k in ("forecast", "method", "accuracy_pct", "sameMonthLastYear")},
         # boxSpecId 있는 줄 → procurement_proposal_item, 없는 줄(미등록 신규 규격) → summary에만
-        "lines": [{"type": "NEW_SPEC" if r["isNew"] else "REPLENISH", "boxCode": r["code"],
+        # 서버(AgentProposalItemService)는 NEW_SPEC 줄을 박스왕 카탈로그 근거로 box_spec 에 등록한다.
+        # 맞춤 규격은 공급사 미등록·정식 견적 전이라 CUSTOM_SPEC 으로 남겨 자동 등록·발주에서 빠지게 한다
+        "lines": [{"type": ("CUSTOM_SPEC" if r["code"] in custom_codes else "NEW_SPEC") if r["isNew"] else "REPLENISH",
+                   "boxCode": r["code"],
                    "boxSpecId": None if r["isNew"] else spec_id.get(r["code"]), "dims": r["dims"],
                    "boxName": spec.get(r["code"], {}).get("name"), "sizeClass": spec.get(r["code"], {}).get("sizeClass"),
                    "qty": r["proposedQty"], "unitPriceKrw": r["unitPrice"], "currentQty": r["currentQty"],
