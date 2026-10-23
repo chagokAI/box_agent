@@ -7,7 +7,7 @@ business-mcp — 박스 주문 제안 업무 도구 서버 (조회·계산·제�
   조회   list_warehouses, list_box_specs, list_product_fits, get_box_inventory, get_shipment_history,
          list_purchase_orders, search_catalog, catalog_status, get_template, list_past_proposals,
          quote_custom_box(유팩 맞춤 제작 참고 견적)
-  계산   analyze_fill_rate, diagnose_inefficiency, find_misfit_clusters, ideal_box_dims, coverage, compare_boxsets,
+  계산   analyze_fill_rate, diagnose_inefficiency, find_misfit_clusters, find_sku_candidates, ideal_box_dims, coverage, compare_boxsets,
          simulate_boxset, plan_order, forecast_shipments, render_proposal, render_proposal_html
   변경   save_proposal, refresh_catalog            (destructiveHint — 에이전트는 승인 뒤에만 부른다)
 

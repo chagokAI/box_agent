@@ -144,13 +144,39 @@ def _load(products, assign, boxes):
             "fill": round(100 * item_v / box_v, 1) if box_v else None}
 
 
-def _kmeans(x, k, iters=30, seed=0):
-    rng = np.random.default_rng(seed)
-    c = x[rng.choice(len(x), k, replace=False)]
-    for _ in range(iters):
-        lab = np.argmin(((x[:, None] - c[None]) ** 2).sum(-1), 1)
-        c = np.array([x[lab == j].mean(0) if (lab == j).any() else c[j] for j in range(k)])
-    return lab
+def _kmeans(x, k, w=None, iters=30, seeds=10):
+    """출고량 가중 k-means. 시작점을 seeds 번 바꿔 가중 제곱오차가 가장 작은 결과를 쓴다"""
+    w = np.ones(len(x)) if w is None else np.asarray(w, float)
+    best, best_err = None, None
+    for seed in range(seeds):
+        rng = np.random.default_rng(seed)
+        c = x[rng.choice(len(x), k, replace=False)]
+        for _ in range(iters):
+            lab = np.argmin(((x[:, None] - c[None]) ** 2).sum(-1), 1)
+            c = np.array([np.average(x[lab == j], axis=0, weights=w[lab == j]) if (lab == j).any() else c[j]
+                          for j in range(k)])
+        err = float((w * ((x - c[lab]) ** 2).sum(-1)).sum())
+        if best_err is None or err < best_err:
+            best, best_err = lab, err
+    return best
+
+
+def _silhouette(x, lab, w):
+    """출고량 가중 평균 실루엣 점수 (군집 개수 고르기용)"""
+    k = lab.max() + 1
+    if k < 2:
+        return -1.0
+    d = np.sqrt(((x[:, None] - x[None]) ** 2).sum(-1))
+    sc = []
+    for i in range(len(x)):
+        same = (lab == lab[i])
+        if same.sum() <= 1:
+            sc.append(0.0)
+            continue
+        a = d[i, same & (np.arange(len(x)) != i)].mean()
+        b = min(d[i, lab == j].mean() for j in range(k) if j != lab[i] and (lab == j).any())
+        sc.append((b - a) / max(a, b))
+    return float(np.average(sc, weights=w))
 
 
 # ---------------------------------------------------------------- Tools
@@ -207,14 +233,20 @@ def diagnose_inefficiency(products: list[dict], box_specs: list[dict], margin_mm
 
 
 @mcp.tool()
-def find_misfit_clusters(products: list[dict], max_clusters: int = 2) -> dict:
-    """저효율 상품을 정렬 치수 기준으로 군집화해 출고량 비중이 큰 '애매한 WDH' 구간을 반환한다."""
+def find_misfit_clusters(products: list[dict], max_clusters: int = 5, min_clusters: int = 2) -> dict:
+    """저효율 상품을 정렬 치수(로그, 형태가 반영되게)·출고량 가중 k-means 로 묶는다.
+    군집 수는 min_clusters~max_clusters 중 가중 실루엣 점수가 가장 높은 값. 출고량 비중이 큰 '애매한 WDH' 구간을 반환한다."""
     mis = [p for p in products if p.get("cause", "OK") != "OK"]
     if not mis:
-        return {"clusters": []}
-    x = np.array([sdims(p["dims"]) for p in mis], float)
-    k = min(max_clusters, len(mis))
-    lab = _kmeans(x, k)
+        return {"clusters": [], "k": 0}
+    x = np.log(np.array([sdims(p["dims"]) for p in mis], float))
+    w = np.array([p["qty90d"] for p in mis], float)
+    k, lab, score = 1, np.zeros(len(mis), int), None
+    for kk in range(min_clusters, min(max_clusters, len(mis) - 1) + 1):
+        lb = _kmeans(x, kk, w)
+        sc = _silhouette(x, lb, w)
+        if score is None or sc > score:
+            k, lab, score = kk, lb, sc
     tot = sum(p["qty90d"] for p in products)
     clusters = []
     for j in range(k):
@@ -239,7 +271,25 @@ def find_misfit_clusters(products: list[dict], max_clusters: int = 2) -> dict:
     clusters.sort(key=lambda c: -c["qty90d"])
     for i, c in enumerate(clusters, 1):
         c["clusterId"] = f"C{i}"
-    return {"clusters": clusters}
+    return {"clusters": clusters, "k": len(clusters), "silhouette": round(score, 3) if score is not None else None}
+
+
+@mcp.tool()
+def find_sku_candidates(products: list[dict], max_fill_pct: float = 20, min_share_pct: float = 1.0,
+                        limit: int = 5) -> dict:
+    """군집과 별도로 볼 단일 품목: 충진율 max_fill_pct 미만이고 출고 비중 min_share_pct 이상인 상품을
+    낭비 부피(박스 부피 − 상품 부피) × 출고량이 큰 순으로 limit 개. 군집과 같은 모양(SKU 1개짜리)으로 돌려준다."""
+    tot = sum(p["qty90d"] for p in products) or 1
+    pick = [p for p in products if p["fill"] < max_fill_pct and 100 * p["qty90d"] / tot >= min_share_pct]
+    pick.sort(key=lambda p: -(vol(p["dims"]) * (100 / max(p["fill"], 0.1) - 1) * p["qty90d"]))
+    out = []
+    for i, p in enumerate(pick[:limit], 1):
+        d = sdims(p["dims"])
+        out.append({"clusterId": f"S{i}", "scope": "SKU", "skus": 1, "qty90d": p["qty90d"],
+                    "share_pct": round(100 * p["qty90d"] / tot, 1), "p50": d, "p90": d, "from_box": p["box"],
+                    "avg_fill": p["fill"], "categories": [p.get("category") or "미분류"], "productIds": [p["productId"]],
+                    "name": p.get("name") or p.get("code")})
+    return {"clusters": out}
 
 
 @mcp.tool()
@@ -282,20 +332,34 @@ def simulate_boxset(products: list[dict], box_specs: list[dict], candidates: lis
         share = round(100 * mq / base["qty"], 1)
         checks = {"monthly_saving": monthly >= g["monthly_saving"], "share_pct": share >= g["share_pct"],
                   "delta_fill": a_fill - b_fill >= g["delta_fill"]}
+        if c.get("scope") == "SKU":          # 단일 품목은 출고 비중 조건을 보지 않는다(그 품목 하나라 비중이 작음)
+            checks.pop("share_pct")
         if "payback_m" in g:
             checks["payback_m"] = payback is not None and payback <= g["payback_m"]
-        res.append({"candId": c["candId"], "cluster": c["cluster"], "type": c["type"], "code": c["code"],
+        res.append({"candId": c["candId"], "cluster": c["cluster"], "type": c["type"], "scope": c.get("scope", "CLUSTER"),
+                    "code": c["code"],
                     "dims": c["dims"], "price": c["price"], "target_share_pct": share,
                     "target_fill_before": round(b_fill, 1), "target_fill_after": round(a_fill, 1),
                     "overall_fill_before": round(base["fill"], 1), "overall_fill_after": round(new["fill"], 1),
                     "monthly_saving": monthly, "init_cost": c["init_cost"], "payback_m": payback,
                     "replaces": sorted({base["assign"][p["productId"]] for p in moved}),
                     "checks": checks, "pass": all(checks.values()), "selected": False})
-    for cl in {r["cluster"] for r in res}:
-        ok = [r for r in res if r["cluster"] == cl and r["pass"]]
-        if not ok:
-            continue
-        max(ok, key=lambda r: r["monthly_saving"])["selected"] = True
+    # 군집·단일 후보는 같은 출고를 두고 겹칠 수 있다 → 절감이 큰 순으로 넣으며 '이미 고른 것 위에 더 줄어드는 만큼'으로 다시 판정
+    chosen, cur = [], base
+    cand_by = {c["candId"]: c for c in candidates}
+    for r in sorted([r for r in res if r["pass"]], key=lambda r: -r["monthly_saving"]):
+        if any(x["cluster"] == r["cluster"] for x in chosen):
+            continue                                   # 군집(단일)당 1개
+        trial = _simulate(products, box_specs + [{"code": x["code"], "dims": x["dims"], "price": x["price"]}
+                                                 for x in chosen + [r]], margin_mm, allow_tilt, tilt_clearance_mm)
+        marginal = round(((cur["box_cost"] + cur["ship_cost"]) - (trial["box_cost"] + trial["ship_cost"])) / 3)
+        g = gate[r["type"]]
+        payback_ok = "payback_m" not in g or (marginal > 0 and cand_by[r["candId"]]["init_cost"] / marginal <= g["payback_m"])
+        r["marginal_saving"] = marginal
+        if marginal >= g["monthly_saving"] and payback_ok:
+            r["selected"] = True
+            chosen.append(r)
+            cur = trial
     sel = [r for r in res if r["selected"]]
     combined = None
     if sel:
