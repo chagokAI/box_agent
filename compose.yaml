@@ -22,7 +22,7 @@ x-agent-image: &agent-image
   networks: [chagok]
 
 x-db-env: &db-env
-  DB_URL: jdbc:postgresql://${DB_HOST:-postgres}:5432/${DB_NAME:-chagok}
+  DB_URL: jdbc:postgresql://${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME:-chagok}
   DB_USERNAME: ${DB_USERNAME:-postgres}
   DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD를 .env에 설정하세요}
 
