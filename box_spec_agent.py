@@ -179,7 +179,7 @@ class AgentState(TypedDict, total=False):
     tilted_products: list                     # 기울여야 들어가는 상품(검토 대상)
     custom_unfit: dict | None                 # 안 들어가는 상품용 맞춤 제작 규격(유팩 참고 견적)
     custom_notes: list                        # 맞춤 견적 실패·불가 메모('확인 필요'에 적음)
-    spec_limit: dict                          # 활성 규격 상한 점검(POL-02 §3): 비활성화·제외 후보, 규격별 사용 비중
+    spec_limit: dict                          # 활성 규격 상한 점검(POL-02 §3): 상한 때문에 뺀 신규 후보, 규격별 사용 비중
     order_quotes: dict                        # 맞춤 규격 2차 견적(제안 수량 기준) {code: quote}
     diagnosis: dict                           # 원인별 출고 비중
     clusters: list                            # '애매한 WDH' 군집
@@ -490,7 +490,7 @@ async def simulate(state: AgentState):
     log("simulate", f"게이트 통과·선정: {sel or '없음 → 기존 규격만 보충'}")
     cfg, specs = state["config"], state["box_specs"]
     opts = {"margin_mm": cfg["margin_mm"], "allow_tilt": cfg["allow_tilt"], "tilt_clearance_mm": cfg["tilt_clearance_mm"]}
-    # 활성 규격 상한(POL-02 §3): 넘으면 사용 비중 낮은 기존 규격 비활성화, 그래도 넘으면 절감 작은 신규부터 제외
+    # 활성 규격 상한(POL-02 §3): 기존 규격은 비활성화하지 않고, 넘으면 절감 작은 신규 후보부터 제외
     cu = state.get("custom_unfit")
     lim_products = state["product_fits"] + (state["unfit_products"] if cu else [])
     new = [{"code": x["code"], "dims": x["dims"], "price": x["price"], "priority": x.get("marginal_saving", x["monthly_saving"])}
@@ -498,15 +498,13 @@ async def simulate(state: AgentState):
     if cu:                               # 포장 불가 상품용 맞춤 규격은 가장 늦게 뺀다
         new.append({"code": cu["code"], "dims": cu["dims"], "price": cu["price"], "priority": 10 ** 12})
     lim = await mcp_call("simulate", "business", "check_spec_limit", products=lim_products, box_specs=specs,
-                         new_specs=new, max_active=cfg["spec_max_active"],
-                         deactivate_below_pct=cfg["spec_deactivate_below_pct"], **opts)
+                         new_specs=new, max_active=cfg["spec_max_active"], **opts)
     if lim["drop"]:
         keep = [c for c in state["candidates"] if c["code"] not in lim["drop"]]
         r = await mcp_call("simulate", "business", "simulate_boxset", products=state["product_fits"], box_specs=specs,
                            candidates=keep, gate=cfg["gate"], **opts)
         sel = [x["candId"] for x in r["results"] if x["selected"]]
     log("simulate", f"활성 규격 {lim['count_before']}종 + 신규 {len(new)}종 = {lim['count_proposed']}종 / 상한 {lim['max_active']}종"
-                    + (f" → 비활성화 제안 {[d['code'] for d in lim['deactivate']]}" if lim["deactivate"] else "")
                     + (f" → 신규 제외 {lim['drop']}" if lim["drop"] else ""))
     recent = None                        # 서버가 승인된 AI 제안으로 등록한 규격은 description 이 "catalog:boxking:<품번>"
     intro = [b for b in specs if str(b.get("description") or "").startswith("catalog:")]
@@ -544,8 +542,7 @@ async def plan_order(state: AgentState):
     if cu:                               # 안 들어가던 상품도 맞춤 규격으로 소모량을 잡는다
         new_specs.append({"code": cu["code"], "dims": cu["dims"], "price": cu["price"], "label": f"{cu['name']} (신규·맞춤)"})
         products = products + state["unfit_products"]
-    deact = {d["code"] for d in (state.get("spec_limit") or {}).get("deactivate", [])}
-    specs = [{**b, "label": f"{b['code']} {dims_s(b['dims'])}"} for b in state["box_specs"] if b["code"] not in deact]
+    specs = [{**b, "label": f"{b['code']} {dims_s(b['dims'])}"} for b in state["box_specs"]]
     y, m = map(int, tm.split("-"))
     peak = bool(cfg["peak_auto"] and m in cfg["peak_months"])        # 성수기 안전 재고(POL-03 §1)
     safety_days = cfg["peak_safety_days"] if peak else cfg["safety_days"]
@@ -663,12 +660,9 @@ def _check_items(state: AgentState, sel: list, prev_amt, ly_amt) -> list[str]:
             checks.append(f"지난 제안 {x['targetMonth']} 예측 {n(f)}건 → 실제 {n(act)}건 (오차 {(f - act) / act * 100:+.1f}%)")
     cfg = state["config"]
     lim = state.get("spec_limit") or {}
-    for d in lim.get("deactivate", []):              # POL-02 §3 활성 규격 상한
-        checks.append(f"활성 규격이 {lim['count_proposed']}종이 되어 상한 {lim['max_active']}종 초과 — {d['code']}"
-                      f"(최근 {cfg['lookback_days']}일 사용 비중 {d['share_pct']}%) 비활성화 결정 필요")
-    if lim.get("drop"):
-        checks.append(f"활성 규격 상한 {lim['max_active']}종 때문에 신규 후보 {', '.join(lim['drop'])} 제외 — "
-                      f"비활성화할 규격(사용 비중 {cfg['spec_deactivate_below_pct']}% 미만)이 없음")
+    if lim.get("drop"):                              # POL-02 §3 활성 규격 상한 (기존 규격은 비활성화하지 않음)
+        checks.append(f"활성 규격 상한 {lim['max_active']}종 때문에 신규 후보 {', '.join(lim['drop'])}를 이번 제안에서 뺌 — "
+                      f"상한 조정 여부 결정 필요")
     for r in plan["orderRows"]:                      # POL-04 §2 규격별 재고 보관 상한
         if r.get("overStock"):
             checks.append(f"{r['label']}: 재고(현재 {n(r['currentQty'])} + 제안 {n(r['proposedQty'])})가 "

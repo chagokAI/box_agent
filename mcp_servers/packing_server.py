@@ -412,27 +412,21 @@ def compare_boxsets(products: list[dict], before_specs: list[dict], after_specs:
 
 @mcp.tool()
 def check_spec_limit(products: list[dict], box_specs: list[dict], new_specs: list[dict], max_active: int,
-                     deactivate_below_pct: float, margin_mm: int = 5, allow_tilt: bool = False,
-                     tilt_clearance_mm: int = 0) -> dict:
-    """활성 규격 수 상한(POL-02 §3). 기존 + 신규로 출고를 다시 배정한 뒤 규격별 사용 비중을 내고,
-    상한을 넘으면 사용 비중 deactivate_below_pct 미만인 기존 규격을 낮은 순으로 비활성화 후보로,
-    그래도 넘으면 신규 규격을 우선순위(priority, 큰 값이 먼저 유지) 낮은 순으로 제외 후보로 돌려준다."""
+                     margin_mm: int = 5, allow_tilt: bool = False, tilt_clearance_mm: int = 0) -> dict:
+    """활성 규격 수 상한(POL-02 §3). 기존 규격은 비활성화하지 않는다(새 상품·남은 재고 대비).
+    기존 + 신규가 상한을 넘으면 신규 규격을 우선순위(priority, 큰 값이 먼저 유지) 낮은 순으로 제외 후보로 돌려준다.
+    share_pct = 기존 + 신규로 출고를 다시 배정했을 때 규격별 사용 비중(참고)."""
     boxes = box_specs + new_specs
     sim = _simulate(products, boxes, margin_mm, allow_tilt, tilt_clearance_mm)
     q = {}
     for p in products:
         q[sim["assign"][p["productId"]]] = q.get(sim["assign"][p["productId"]], 0) + p["qty90d"]
     tot = sum(q.values()) or 1
-    share = {b["code"]: round(100 * q.get(b["code"], 0) / tot, 1) for b in boxes}
     over = len(boxes) - max_active
-    low = sorted((b for b in box_specs if share[b["code"]] < deactivate_below_pct), key=lambda b: share[b["code"]])
-    deactivate = [{"code": b["code"], "share_pct": share[b["code"]]} for b in low[:max(over, 0)]]
-    left = over - len(deactivate)
-    drop = [b["code"] for b in sorted(new_specs, key=lambda b: b.get("priority", 0))[:max(left, 0)]]
-    return {"count_before": len(box_specs), "count_after": len(boxes) - len(deactivate) - len(drop),
-            "count_proposed": len(boxes), "max_active": max_active, "over": max(over, 0), "share_pct": share,
-            "low_usage": [{"code": b["code"], "share_pct": share[b["code"]]} for b in low],
-            "deactivate": deactivate, "drop": drop}
+    drop = [b["code"] for b in sorted(new_specs, key=lambda b: b.get("priority", 0))[:max(over, 0)]]
+    return {"count_before": len(box_specs), "count_proposed": len(boxes), "count_after": len(boxes) - len(drop),
+            "max_active": max_active, "over": max(over, 0), "drop": drop,
+            "share_pct": {b["code"]: round(100 * q.get(b["code"], 0) / tot, 1) for b in boxes}}
 
 
 @mcp.tool()

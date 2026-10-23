@@ -224,8 +224,8 @@ BOXKING_BASE_URL=http://127.0.0.1:8765 BOXKING_MIN_DELAY=0 CATALOG_DB=test.db py
 - 점검: `python tests/policy_rules_check.py` — 문서의 키가 규칙에 있는지, 모든 규칙이 문서에 쓰이고 코드가 읽는지, 반려 지시문 목록이 맞는지
 - 제안 summary 에 `rules`(버전·센터 조정값·적용값), HTML 상세보기에 "판단 규칙 v1, 이 센터 조정값 …"
 - 나중에 DB(policy_rule, policy_rule_override)·본부장 화면으로 옮길 때는 `policy_rules.load_rules / load_overrides` 안쪽만 바꾼다
-- 규칙으로 들어간 정책: 활성 규격 상한(`spec_max_active`, 넘으면 사용 비중 `spec_deactivate_below_pct` 미만 비활성화 제안 → 그래도 넘으면
-  절감 작은 신규 제외, `check_spec_limit`), 재고 보관 상한(`max_stock_months`, `plan_order` overStock), 성수기 안전 재고(`peak_*`, 기본 끔),
+- 규칙으로 들어간 정책: 활성 규격 상한(`spec_max_active`, 기본 15종. 기존 규격은 비활성화하지 않고 넘으면 절감 작은 신규 후보부터 제외,
+  `check_spec_limit`), 재고 보관 상한(`max_stock_months`, `plan_order` overStock), 성수기 안전 재고(`peak_*`, 기본 끔),
   전월 대비 금액 변동 사유(`mom_note_pct`)
 
 ## 신규 규격 후보 구간 (군집 + 단일 품목)

@@ -8,7 +8,7 @@
 # 필드: key(설정 경로, 고유) value type(int|float|bool|int_list) unit range([최소, 최대])
 #       scope(center = 센터별 덮어쓰기 허용 / global = 전사 고정) feedback(반려 의견으로 바꿀 수 있는지)
 #       source(근거 조항) label(화면·문서 표시 이름)
-version: 1
+version: 2
 updated_at: 2026-10-23
 rules:
   # ── 박스 수용 판정 (POL-01) ─────────────────────────────────────────────
@@ -52,10 +52,8 @@ rules:
      source: POL-02 §6, label: 맞춤 제작 제외(기성품만)}
 
   # ── 규격 수 상한 (POL-02 §3) ────────────────────────────────────────────
-  - {key: spec_max_active, value: 9, type: int, unit: 종, range: [3, 30], scope: center, feedback: false,
+  - {key: spec_max_active, value: 15, type: int, unit: 종, range: [3, 30], scope: center, feedback: false,
      source: POL-02 §3, label: 센터당 활성 규격 상한}
-  - {key: spec_deactivate_below_pct, value: 2, type: float, unit: "%", range: [0, 10], scope: center, feedback: false,
-     source: POL-02 §3, label: 비활성화 후보 사용 비중 기준}
 
   # ── 안전 재고·주문 수량 (POL-03, POL-04) ───────────────────────────────
   - {key: safety_days, value: 7, type: int, unit: 일, range: [3, 30], scope: center, feedback: true,
