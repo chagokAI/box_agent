@@ -183,6 +183,8 @@ class AgentState(TypedDict, total=False):
     candidates: list                          # 신규 규격 후보
     sim_results: list                         # 후보별 효과·게이트 판정·선정
     sim_combined: dict | None                 # 선정 규격 모두 도입 시 전체 충진율·월 절감·적재량 전/후
+    recent_effect: dict | None                # 새 선정이 없을 때: 지난 제안으로 등록된 규격의 효과(없었을 때 대비)
+    custom_effect: dict | None                # 안 들어가는 상품용 맞춤 규격으로 담을 때의 월 적재량
     order_plan: dict                          # 규격별 제안 수량·금액
     template: dict                            # 회사 양식
     proposal_md: str                          # 제안서 본문
@@ -463,7 +465,28 @@ async def simulate(state: AgentState):
                         f"월절감 {n(x['monthly_saving'])} pass={x['pass']} selected={x['selected']}")
     sel = [x["candId"] for x in r["results"] if x["selected"]]
     log("simulate", f"게이트 통과·선정: {sel or '없음 → 기존 규격만 보충'}")
-    return {"sim_results": r["results"], "sim_combined": r["combined"], "messages": ["simulate"]}
+    cfg, specs = state["config"], state["box_specs"]
+    opts = {"margin_mm": cfg["margin_mm"], "allow_tilt": cfg["allow_tilt"], "tilt_clearance_mm": cfg["tilt_clearance_mm"]}
+    recent = None                        # 서버가 승인된 AI 제안으로 등록한 규격은 description 이 "catalog:boxking:<품번>"
+    intro = [b for b in specs if str(b.get("description") or "").startswith("catalog:")]
+    if not sel and intro:                # 새 선정이 없으면 지난 제안으로 등록된 규격이 지금 내는 효과를 보여 준다
+        recent = await mcp_call("simulate", "business", "compare_boxsets", products=state["product_fits"],
+                                before_specs=[b for b in specs if b not in intro], after_specs=specs, **opts)
+        recent["codes"] = [b["code"] for b in intro]
+        if recent["load"]:
+            b, a = recent["load"]["before"], recent["load"]["after"]
+            log("simulate", f"최근 도입 {recent['codes']} 효과(월 {n(b['shipments'])}건): 충진율 {b['fill']}→{a['fill']}% "
+                            f"박스비+운임 {n(b['box_krw'] + b['freight_krw'])}→{n(a['box_krw'] + a['freight_krw'])}원")
+        else:
+            recent = None
+    custom = None
+    if (cu := state.get("custom_unfit")):
+        custom = (await mcp_call("simulate", "business", "compare_boxsets",
+                                 products=state["product_fits"] + state["unfit_products"], before_specs=specs,
+                                 after_specs=specs + [{"code": cu["code"], "dims": cu["dims"], "price": cu["price"]}],
+                                 **opts))["newly_fit"]
+    return {"sim_results": r["results"], "sim_combined": r["combined"], "recent_effect": recent,
+            "custom_effect": custom, "messages": ["simulate"]}
 
 
 async def plan_order(state: AgentState):
@@ -622,39 +645,70 @@ FREIGHT_BASIS = ("경동 정기화물 운임표 — 50,000㎤ 이하는 소화�
                  "박스 1개 = 1건, 부피는 박스 내치수, 무게는 상품 실중량(박스 무게 제외)")
 
 
-def _effect(state: AgentState, sel: list) -> tuple[str, list[dict]]:
-    """신규 규격 도입 효과 표: 배정이 바뀌는 출고를 기존 박스로 보낼 때 vs 신규 규격으로 보낼 때 (툴 결과만 사용)"""
-    comb = state.get("sim_combined")
-    if not sel or not comb:
-        return "이번 제안에 신규 규격 없음 — 해당 없음", [{"metric": "신규 규격 없음", "before": "—", "after": "—", "change": "—"}]
-    cd = {c["candId"]: c for c in state["candidates"]}
+def _won_change(b, a) -> str:
+    return f"{'−' if a < b else '+'}{n(abs(a - b))}원 ({_pct(b, a)})"
+
+
+def _load_rows(comb: dict, before_price: str, after_price: str) -> list[dict]:
+    """배정이 바뀌는 출고의 전/후 비교 행 (simulate_boxset.combined · compare_boxsets 결과)"""
     b, a = comb["load"]["before"], comb["load"]["after"]
-    names = ", ".join(cd[s["candId"]]["name"] for s in sel)
-    price = {x["code"]: x["price"] for x in state["box_specs"]}
-    basis = (f"최근 90일 출고의 월평균 기준. {', '.join(comb['load']['fromBoxes'])}에 담기던 월 {n(b['shipments'])}건이 "
-             f"신규 규격 {names}에 담길 때 비교 (박스 단가는 VAT 별도)")
     rows = [
         {"metric": "대상 출고 충진율", "before": f"{b['fill']}%", "after": f"{a['fill']}%",
          "change": f"{a['fill'] - b['fill']:+.1f}%p"},
         {"metric": "월 박스 적재 부피", "before": f"{b['box_m3']}m³", "after": f"{a['box_m3']}m³",
          "change": _pct(b["box_m3"], a["box_m3"])},
-        {"metric": "박스 단가", "before": " · ".join(f"{c} {n(price[c])}원" for c in comb["load"]["fromBoxes"]),
-         "after": " · ".join(f"{cd[s['candId']]['name']} {n(s['price'])}원" for s in sel), "change": "—"},
+        {"metric": "박스 단가", "before": before_price, "after": after_price, "change": "—"},
         {"metric": "월 박스비", "before": f"{n(b['box_krw'])}원", "after": f"{n(a['box_krw'])}원",
-         "change": f"{'−' if a['box_krw'] < b['box_krw'] else '+'}{n(abs(a['box_krw'] - b['box_krw']))}원 "
-                   f"({_pct(b['box_krw'], a['box_krw'])})"},
+         "change": _won_change(b["box_krw"], a["box_krw"])},
         {"metric": "월 운임(경동 정기화물)", "before": f"{n(b['freight_krw'])}원", "after": f"{n(a['freight_krw'])}원",
-         "change": f"{'−' if a['freight_krw'] < b['freight_krw'] else '+'}{n(abs(a['freight_krw'] - b['freight_krw']))}원 "
-                   f"({_pct(b['freight_krw'], a['freight_krw'])})"},
+         "change": _won_change(b["freight_krw"], a["freight_krw"])},
         {"metric": "월 박스비 + 운임", "before": f"{n(b['box_krw'] + b['freight_krw'])}원",
          "after": f"{n(a['box_krw'] + a['freight_krw'])}원",
-         "change": f"{'−' if a['box_krw'] + a['freight_krw'] < b['box_krw'] + b['freight_krw'] else '+'}"
-                   f"{n(abs(a['box_krw'] + a['freight_krw'] - b['box_krw'] - b['freight_krw']))}원 "
-                   f"({_pct(b['box_krw'] + b['freight_krw'], a['box_krw'] + a['freight_krw'])})"},
-        {"metric": "센터 전체 충진율", "before": f"{comb['overall_fill_before']}%",
-         "after": f"{comb['overall_fill_after']}%",
-         "change": f"{comb['overall_fill_after'] - comb['overall_fill_before']:+.1f}%p"},
+         "change": _won_change(b["box_krw"] + b["freight_krw"], a["box_krw"] + a["freight_krw"])},
     ]
+    if comb.get("overall_fill_before") is not None:
+        rows.append({"metric": "센터 전체 충진율", "before": f"{comb['overall_fill_before']}%",
+                     "after": f"{comb['overall_fill_after']}%",
+                     "change": f"{comb['overall_fill_after'] - comb['overall_fill_before']:+.1f}%p"})
+    return rows
+
+
+def _effect(state: AgentState, sel: list) -> tuple[str, list[dict]]:
+    """신규 규격 도입 효과 표 (툴 결과만 사용). 블록:
+    ① 이번에 선정한 신규 규격 (없으면 ② 지난 제안으로 등록된 규격이 지금 내는 효과), ③ 안 들어가는 상품용 맞춤 규격"""
+    price = {x["code"]: x["price"] for x in state["box_specs"]}
+    blocks = []                                   # (이름, 근거 문장, 행)
+    comb, recent = state.get("sim_combined"), state.get("recent_effect")
+    if sel and comb:
+        cd = {c["candId"]: c for c in state["candidates"]}
+        names = ", ".join(cd[s["candId"]]["name"] for s in sel)
+        b = comb["load"]["before"]
+        blocks.append((names, f"{', '.join(comb['load']['fromBoxes'])}에 담기던 월 {n(b['shipments'])}건이 신규 규격 {names}에 "
+                              f"담길 때 비교", _load_rows(comb, " · ".join(f"{c} {n(price[c])}원" for c in comb["load"]["fromBoxes"]),
+                                                       " · ".join(f"{cd[s['candId']]['name']} {n(s['price'])}원" for s in sel))))
+    elif recent:
+        names, b = ", ".join(recent["codes"]), recent["load"]["before"]
+        blocks.append((names, f"지난 제안으로 등록된 규격({names})이 없었다면 {', '.join(recent['load']['fromBoxes'])}에 담겼을 "
+                              f"월 {n(b['shipments'])}건 기준 비교",
+                       _load_rows(recent, " · ".join(f"{c} {n(price[c])}원" for c in recent["load"]["fromBoxes"]),
+                                  " · ".join(f"{c} {n(price[c])}원" for c in recent["codes"]))))
+    if (ce := state.get("custom_effect")) and (cu := state.get("custom_unfit")):
+        oq = (state.get("order_quotes") or {}).get(cu["code"]) or cu["quote"]
+        nf = "맞는 박스 없음"
+        box_krw = round(ce["box_krw"] * oq["unitPrice"] / cu["price"])      # 2차 견적(제안 수량) 단가로 환산
+        blocks.append((cu["name"], f"보유 규격에 안 들어가던 월 {n(ce['shipments'])}건을 {cu['name']}에 담을 때",
+                       [{"metric": "대상 월 출고", "before": f"{n(ce['shipments'])}건 (포장 불가)", "after": f"{n(ce['shipments'])}건",
+                         "change": "—"},
+                        {"metric": "박스 단가", "before": nf, "after": f"{n(oq['unitPrice'])}원 (유팩 참고 견적)", "change": "—"},
+                        {"metric": "대상 출고 충진율", "before": nf, "after": f"{ce['fill']}%", "change": "—"},
+                        {"metric": "월 박스비", "before": nf, "after": f"{n(box_krw)}원", "change": "—"},
+                        {"metric": "월 운임(경동 정기화물)", "before": nf, "after": f"{n(ce['freight_krw'])}원", "change": "—"}]))
+    if not blocks:
+        return "이번 제안에 신규 규격 없음 — 해당 없음", [{"metric": "신규 규격 없음", "before": "—", "after": "—", "change": "—"}]
+    many = len(blocks) > 1
+    basis = "최근 90일 출고의 월평균 기준 (박스 단가는 VAT 별도). " + " / ".join(
+        (f"[{name}] " if many else "") + text for name, text, _ in blocks)
+    rows = [{**r, "metric": (f"[{name}] " if many else "") + r["metric"]} for name, _, rr in blocks for r in rr]
     return basis, rows
 
 
@@ -736,6 +790,7 @@ async def write_proposal(state: AgentState):
                                                                       "from_box", "avg_fill")} for c in state["clusters"]],
              "orderRows": plan["orderRows"], "skipped": plan["skipped"], "dataMeta": meta,
              "pastProposals": state.get("past_proposals", []), "newSpecEffect": state.get("sim_combined"),
+             "recentSpecEffect": state.get("recent_effect"), "customEffect": state.get("custom_effect"),
              "customQuotes": [c["quote"] for c in state["candidates"] if c.get("quote")]
                              + ([state["custom_unfit"]["quote"]] if state.get("custom_unfit") else [])
                              + list((state.get("order_quotes") or {}).values()),
