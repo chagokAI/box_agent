@@ -547,8 +547,8 @@ async def simulate(state: AgentState):
         sel = [x["candId"] for x in r["results"] if x["selected"]]
     log("simulate", f"활성 규격 {lim['count_before']}종 + 신규 {len(new)}종 = {lim['count_proposed']}종 / 상한 {lim['max_active']}종"
                     + (f" → 신규 제외 {lim['drop']}" if lim["drop"] else ""))
-    recent = None                        # 서버가 승인된 AI 제안으로 등록한 규격은 description 이 "catalog:boxking:<품번>"
-    intro = [b for b in specs if str(b.get("description") or "").startswith("catalog:")]
+    recent = None                        # 승인된 AI 제안으로 등록한 규격은 description 이 "catalog:boxking:<품번>" 또는 "custom:…"
+    intro = [b for b in specs if str(b.get("description") or "").startswith(("catalog:", "custom:"))]
     if not sel and intro:                # 새 선정이 없으면 지난 제안으로 등록된 규격이 지금 내는 효과를 보여 준다
         recent = await mcp_call("simulate", "business", "compare_boxsets", products=state["product_fits"],
                                 before_specs=[b for b in specs if b not in intro], after_specs=specs, **opts)
