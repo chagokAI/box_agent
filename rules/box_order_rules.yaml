@@ -60,6 +60,8 @@ rules:
      source: POL-02 §7, label: 목표 모드 후보의 규제 대상 충진율 최소 개선}
   - {key: fill_mode_max_extra_cost, value: 300000, type: int, unit: 원, range: [0, 5000000], scope: center, feedback: true,
      source: POL-02 §7, label: 목표 모드 월 추가 비용 한도}
+  - {key: fill_sku_limit, value: 5, type: int, unit: 개, range: [0, 20], scope: center, feedback: false,
+     source: POL-02 §7, label: 목표 모드 상품 전용 후보 최대 개수(규제 대상 저충진 상품)}
 
   # ── 규격 수 상한 (POL-02 §3) ────────────────────────────────────────────
   - {key: spec_max_active, value: 15, type: int, unit: 종, range: [3, 30], scope: center, feedback: false,
