@@ -26,6 +26,7 @@ for _m, _rows in data.items():
         _d.setdefault("saving_act", _d["saving"]); _d.setdefault("co2_act", _d["co2_cut"])
         _d["saving"] = round(_d["saving_act"] / _dim * DAYS30)
         _d["co2_cut"] = round(_d["co2_act"] / _dim * DAYS30, 1)
+        _d["ship30"] = _d["ship"] / _dim * DAYS30
 FIRST = f"{int(MONTHS[0][5:])}월"
 won = lambda v: f"{round(v):,}원"
 
@@ -53,10 +54,16 @@ def report(mi):
     span = f"{int(MONTHS[0][5:])}~{int(m[5:])}월" if mi else f"{int(m[5:])}월"
     trend = [[x[5:] + "월", sum(d["saving"] for d in data[x]), sum(d["co2_cut"] for d in data[x])] for x in MONTHS[:mi + 1]]
     prev = {d["center"]: d for d in data[MONTHS[mi - 1]]} if mi else {}
-    # 이번 달 값 = 전월 대비 늘어난 효율화(첫 달은 도입 전 대비). 누적 = 도입 전 대비 월 효과의 합
+    # 이번 달 값 = 전월 대비 늘어난 효율화(첫 달은 도입 전 대비). 출고량 변동은 빼고 효율 변화만:
+    # (이번 달 출고 1건당 절감 − 전월 출고 1건당 절감) × 이번 달 출고(30일 기준). 누적 = 도입 전 대비 월 효과의 합
     for d in rows:
-        pv = prev.get(d["center"], {})
-        d["inc_s"], d["inc_c"] = d["saving"] - pv.get("saving", 0), round(d["co2_cut"] - pv.get("co2_cut", 0), 1)
+        pv = prev.get(d["center"])
+        if not pv or not pv["ship"] or not d["ship"]:
+            d["inc_s"], d["inc_c"] = d["saving"], d["co2_cut"]
+            continue
+        ps, pc = pv["saving_act"] / pv["ship"], pv["co2_act"] / pv["ship"]
+        d["inc_s"] = round(d["saving"] - ps * d["ship30"])
+        d["inc_c"] = round(d["co2_cut"] - pc * d["ship30"], 1)
     rows.sort(key=lambda d: -d["inc_s"])
     inc = lambda k: sum(d[k] for d in rows)
     r3 = lambda v: round(v / 1000) * 1000                    # 요약 표시용: 천 원 단위(데이터는 그대로)
@@ -145,7 +152,7 @@ def report(mi):
 <li>포장재 탄소: 골판지 중량(전개 면적 × 550 g/m²) × 491 kg CO₂e/t (FEFCO 2021, STD-02)</li>
 <li>충진율: 포장 규제 대상 출고(박스 세 변 합 50cm 초과)만 계산 — 50cm 이하는 포장공간비율 기준 미적용(포장 규칙 별표 1 비고 11)이라 제외. 상품 부피 ÷ 박스 내부 부피, 출고량 가중</li>
 <li>규제 준수율: 세 변 합 50cm 초과 출고 중 포장공간비율 50% 이하(부피 기준 근사) 비율 (포장 규칙 별표 1 비고 11, STD-03)</li>
-<li>요약 금액은 천 원 단위로 반올림해 표시(계산은 원 단위). 월 절감액 = 전월까지 도입한 개선의 월 절감 + 이번 달 새 개선의 월 절감(도입 전 대비), 월 값은 한 달 = 30일(그 달 일평균 × 30)로 맞춰 일수 차이로 생기는 증감을 없앤다. 연간 추정 = 일평균 × 365. 월 탄소 감축도 같은 방식. 이번 달 값(절감·탄소): 전월 대비 늘어난 30일 기준 효율화(첫 달은 도입 전 대비). 누적은 실제 합계. 누적 = 시작 달부터 각 달의 도입 전 대비 월 효과 합</li>
+<li>요약 금액은 천 원 단위로 반올림해 표시(계산은 원 단위). 월 절감액 = 전월까지 도입한 개선의 월 절감 + 이번 달 새 개선의 월 절감(도입 전 대비), 월 값은 한 달 = 30일(그 달 일평균 × 30)로 맞춰 일수 차이로 생기는 증감을 없앤다. 연간 추정 = 일평균 × 365. 월 탄소 감축도 같은 방식. 이번 달 값(절감·탄소): 출고량 변동을 뺀 효율 변화 = (이번 달 출고 1건당 절감 − 전월 출고 1건당 절감) × 이번 달 출고(30일 기준), 첫 달은 도입 전 대비. 누적은 실제 합계. 누적 = 시작 달부터 각 달의 도입 전 대비 월 효과 합</li>
 <li>절감 기준 하향: 전월에 새 규격이 없던 센터는 그달 신규 규격 기준을 월 절감 30만 → 3만 원, 대상 충진율 개선 +10 → +3%p, 출고 비중 3 → 1%로 낮춰 제안(본부 센터별 조정)</li>
 <li>개선 반영: 그달 승인되어 반영된 개선 제안 건수(신규 규격 도입 등)</li>
 <li>판정 (목표: 포장 규제 대상 출고 충진율 50%, POL-02 §7) — 양호: 50% 이상 / 주의: 미달이지만 전월 대비 +2%p 이상 개선 / 효율 개선 필요: 미달이면서 +2%p 미만(정체, 반려 포함)</li>
