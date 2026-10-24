@@ -758,13 +758,16 @@ FREIGHT_BASIS = ("경동 정기화물 운임표 — 50,000㎤ 이하는 소화�
 
 
 def _won_change(b, a) -> str:
-    return f"{'−' if a < b else '+'}{n(abs(a - b))}원 ({_pct(b, a)})"
+    """비용 변화: 줄면 'n원 절감 (x%↓)', 늘면 'n원 증가 (x%↑)' — 빼기 기호가 손해로 읽히지 않게"""
+    if a == b:
+        return "변화 없음"
+    pct = f"{abs(a / b - 1) * 100:.1f}%" if b else "—"
+    return f"{n(abs(a - b))}원 {'절감' if a < b else '증가'} ({pct}{'↓' if a < b else '↑'})"
 
 
 def _saving_change(block: dict, before_total: int) -> str:
     """월 박스비 + 운임 변화 — 예상 이익과 같은 값(block.monthly_saving)을 쓴다. 적재량 합계로 다시 빼지 않는다(반올림 차이 방지)"""
-    sv = block["monthly_saving"]
-    return f"{'−' if sv > 0 else '+'}{n(abs(sv))}원 ({_pct(before_total, before_total - sv)})"
+    return _won_change(before_total, before_total - block["monthly_saving"])
 
 
 def _load_rows(comb: dict, before_price: str, after_price: str) -> list[dict]:

@@ -100,7 +100,7 @@ def _html_fragments(d: dict) -> dict:
         parts.append(f'<h2>신규 규격 도입 효과 <small>{_esc(eff.get("subtitle", ""))}</small></h2><div class="two"><div>'
                      '<div class="legend"><span><i style="background:var(--s1)"></i>박스비</span>'
                      '<span><i style="background:var(--s2)"></i>운임 (경동 정기화물)</span></div>'
-                     '<svg id="costChart" viewBox="0 0 440 230" width="100%" role="img" aria-label="월 박스비와 운임, 도입 전후 누적 막대"></svg>'
+                     '<svg id="costChart" viewBox="0 0 440 244" width="100%" role="img" aria-label="월 박스비와 운임, 도입 전후 누적 막대"></svg>'
                      '</div><div class="delta">'
                      + "".join(f'<div class="drow"><span>{_esc(a)}</span><b{good if g else ""}>{_esc(b)}</b></div>'
                                for a, b, g in eff["rows"]) + '</div></div>')
