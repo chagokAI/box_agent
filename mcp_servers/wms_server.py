@@ -7,7 +7,7 @@ wms 도구 — 차곡 업무 데이터 조회 전용 (business-mcp 에 묶여 �
 - API 오류는 ToolError 로 돌려주고, 메시지에 다시 시도할 때 확인할 것을 넣는다.
 
 데이터 해석(서버 스키마에 명시가 없어 가정)
-- 출고 1건 = item_event 1행. SHIPMENT_EVENT_STATUSES(쉼표 구분)를 주면 그 status만 센다.
+- 출고 1건 = item_event 1행. SHIPMENT_EVENT_STATUSES(쉼표 구분, 기본 SUCCEEDED,WAITING)의 status만 센다.
   응답 meta.eventStatuses 에 status별 건수를 같이 주므로 중복 집계 여부를 확인할 수 있다.
 - 발주 대상 월 = 연결된 procurement_proposal.target_month, 없으면 납품 희망일(requested_delivery_date)의 월.
 - 발주 금액 = Σ purchase_order_item.qty × unit_price_krw
@@ -30,7 +30,8 @@ import chagok_api as api
 
 mcp = FastMCP("wms", log_level="WARNING")
 KST = timezone(timedelta(hours=9))
-EVENT_STATUSES = [s.strip() for s in os.getenv("SHIPMENT_EVENT_STATUSES", "").split(",") if s.strip()]
+# 출고로 셀 item_event status. 기본은 박스를 쓰는 출고(포장 성공 + 포장 대기). 식별 실패(FAILED, 미등록 물품)는 박스를 쓰지 않아 뺀다
+EVENT_STATUSES = [s.strip() for s in (os.getenv("SHIPMENT_EVENT_STATUSES") or "SUCCEEDED,WAITING").split(",") if s.strip()]
 REJECTED_PO = {"REJECTED", "CANCELED", "CANCELLED", "반려", "취소"}
 
 
