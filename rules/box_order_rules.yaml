@@ -76,6 +76,8 @@ rules:
      source: POL-03 §1, label: 성수기(월)}
   - {key: peak_auto, value: false, type: bool, scope: center, feedback: false,
      source: POL-03 §1, label: 성수기 안전 재고 자동 적용}
+  - {key: forecast_seasonal, value: false, type: bool, scope: global, feedback: false,
+     source: POL-03 §2, label: 출고 예측에 전년 동월 계절 지수 적용(끄면 최근 3개월 평균)}
   - {key: rounding_unit, value: 100, type: int, unit: 개, range: [50, 1000], scope: center, feedback: true,
      source: POL-03 §2, label: 제안 수량 반올림 단위}
   - {key: max_stock_months, value: 2, type: float, unit: 개월, range: [1, 6], scope: center, feedback: false,

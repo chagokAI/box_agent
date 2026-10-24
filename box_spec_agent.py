@@ -337,7 +337,8 @@ async def collect_data(state: AgentState):
 
 async def forecast_demand(state: AgentState):
     r = await mcp_call("forecast_demand", "business", "forecast_shipments",
-                       history=state["shipment_history"], target_month=state["job"]["targetMonth"])
+                       history=state["shipment_history"], target_month=state["job"]["targetMonth"],
+                       seasonal=state["config"]["forecast_seasonal"])
     if not r["forecast"]:
         raise RuntimeError("월별 출고 이력이 없어 수요 예측 불가 (item_event 확인)")
     ly = n(r["sameMonthLastYear"]) + "건" if r["sameMonthLastYear"] else "없음"
