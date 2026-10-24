@@ -161,6 +161,36 @@ def _reg_fill(products, assign, boxes, limit_mm=500):
     return round(f / q, 1) if q else 0.0
 
 
+def _by_product(rows):
+    """상품 × 박스 행(품절·수동 매칭으로 한 상품이 여러 박스에 나감)을 상품 1행으로 합친다.
+    출고량 합계, 충진율 출고량 가중 평균, 박스·원인은 출고량이 가장 많은 행 기준. productId = 상품 ID(pid)"""
+    out = {}
+    for p in rows:
+        pid = p.get("pid") or p["productId"]
+        m = out.get(pid)
+        if m is None:
+            out[pid] = {**p, "productId": pid, "_top": p["qty90d"], "_fq": p.get("fill", 0) * p["qty90d"]}
+            continue
+        m["_fq"] += p.get("fill", 0) * p["qty90d"]
+        m["qty90d"] += p["qty90d"]
+        if p["qty90d"] > m["_top"]:
+            m.update({k: p[k] for k in ("box", "cause", "slack", "fit") if k in p}, _top=p["qty90d"])
+    for m in out.values():
+        m["fill"] = round(m.pop("_fq") / m["qty90d"], 2) if m["qty90d"] else m.get("fill")
+        m.pop("_top")
+    return list(out.values())
+
+
+def _wpct(arr, w, q):
+    """출고량 가중 백분위(축별): 많이 나가는 상품이 박스 크기를 정한다"""
+    out = []
+    for col in np.asarray(arr, float).T:
+        o = np.argsort(col)
+        cw = np.cumsum(np.asarray(w, float)[o])
+        out.append(col[o][min(np.searchsorted(cw, q / 100 * cw[-1]), len(col) - 1)])
+    return np.round(out).astype(int).tolist()
+
+
 def _kmeans(x, k, w=None, iters=30, seeds=10):
     """출고량 가중 k-means. 시작점을 seeds 번 바꿔 가중 제곱오차가 가장 작은 결과를 쓴다"""
     w = np.ones(len(x)) if w is None else np.asarray(w, float)
@@ -262,6 +292,7 @@ def diagnose_inefficiency(products: list[dict], box_specs: list[dict], margin_mm
 def find_misfit_clusters(products: list[dict], max_clusters: int = 5, min_clusters: int = 2) -> dict:
     """저효율 상품을 정렬 치수(로그, 형태가 반영되게)·출고량 가중 k-means 로 묶는다.
     군집 수는 min_clusters~max_clusters 중 가중 실루엣 점수가 가장 높은 값. 출고량 비중이 큰 '애매한 WDH' 구간을 반환한다."""
+    products = _by_product(products)
     mis = [p for p in products if p.get("cause", "OK") != "OK"]
     if not mis:
         return {"clusters": [], "k": 0}
@@ -287,8 +318,8 @@ def find_misfit_clusters(products: list[dict], max_clusters: int = 5, min_cluste
             by_cat[p["category"]] = by_cat.get(p["category"], 0) + p["qty90d"]
         clusters.append({
             "clusterId": "", "skus": len(mem), "qty90d": q, "share_pct": round(100 * q / tot, 1),
-            "p50": np.percentile(arr, 50, 0).round().astype(int).tolist(),
-            "p90": np.percentile(arr, 90, 0).round().astype(int).tolist(),
+            "p50": _wpct(arr, [p["qty90d"] for p in mem], 50),
+            "p90": _wpct(arr, [p["qty90d"] for p in mem], 90),
             "from_box": max(by_box, key=by_box.get),
             "avg_fill": round(sum(p["fill"] * p["qty90d"] for p in mem) / q, 1),
             "categories": sorted(by_cat, key=lambda k: -by_cat[k]),          # 출고량 많은 분류부터
@@ -306,6 +337,7 @@ def find_sku_candidates(products: list[dict], max_fill_pct: float = 20, min_shar
     """군집과 별도로 볼 단일 품목: 충진율 max_fill_pct 미만이고 출고 비중 min_share_pct 이상인 상품을
     낭비 부피(박스 부피 − 상품 부피) × 출고량이 큰 순으로 limit 개. 군집과 같은 모양(SKU 1개짜리)으로 돌려준다.
     regulated_boxes 를 주면 그 박스(포장 규제 대상)에 담기는 상품만 본다(ESG 우선 모드)."""
+    products = _by_product(products)
     tot = sum(p["qty90d"] for p in products) or 1
     pick = [p for p in products if p["fill"] < max_fill_pct and 100 * p["qty90d"] / tot >= min_share_pct
             and (regulated_boxes is None or p["box"] in regulated_boxes)]
@@ -330,6 +362,7 @@ def ideal_box_dims(p90_dims: list[int], margin_mm: int = 5, round_to_mm: int = 5
 def coverage(products: list[dict], box_dims: list[int], margin_mm: int = 5, allow_tilt: bool = False,
              tilt_clearance_mm: int = 0) -> dict:
     """주어진 박스에 들어가는 상품의 출고량 비율(%)."""
+    products = _by_product(products)
     tot = sum(p["qty90d"] for p in products)
     ok = sum(p["qty90d"] for p in products if fits(p["dims"], box_dims, margin_mm, allow_tilt, tilt_clearance_mm))
     return {"coverage_pct": round(100 * ok / tot, 1) if tot else 0.0}
@@ -376,7 +409,7 @@ def simulate_boxset(products: list[dict], box_specs: list[dict], candidates: lis
             "FILL" if fill_mode and reg_a - base_reg >= fill_mode["min_gain"] and monthly >= -fill_mode["max_extra_cost"] else None)
         anchor = set(c.get("productIds") or [])
         moved_rows = sorted(({"productId": p["productId"], "name": p.get("name") or p.get("code"), "qty90d": p["qty90d"],
-                              "from": base["assign"][p["productId"]], "anchor": p["productId"] in anchor,
+                              "from": base["assign"][p["productId"]], "anchor": (p.get("pid") or p["productId"]) in anchor,
                               "fill_before": round(100 * vol(p["dims"]) / vol(spec[base["assign"][p["productId"]]]["dims"]), 1),
                               "fill_after": round(100 * vol(p["dims"]) / vol(c["dims"]), 1)} for p in moved),
                             key=lambda r: (not r["anchor"], -r["qty90d"]))

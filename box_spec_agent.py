@@ -421,7 +421,7 @@ async def gen_candidates(state: AgentState):
         log("gen_candidates", "운영자 피드백 반영: 신규 규격 없이 기존 규격만 보충")
         return {"candidates": [], "custom_unfit": None, "custom_notes": [], "messages": ["gen_candidates"]}
     for c in state["clusters"]:
-        prods = [p for p in state["product_fits"] if p["productId"] in c["productIds"]]
+        prods = [p for p in state["product_fits"] if (p.get("pid") or p["productId"]) in c["productIds"]]
         ideal = (await mcp_call("gen_candidates", "business", "ideal_box_dims",
                                 p90_dims=c["p90"], margin_mm=m))["dims"]
         hits = await mcp_call(
