@@ -30,7 +30,7 @@ import re
 import sys
 import uuid
 from contextlib import AsyncExitStack, asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Literal, TypedDict
 
@@ -302,7 +302,13 @@ async def collect_data(state: AgentState):
     wh, tm = job["warehouseId"], job["targetMonth"]
     last_m = prev_ym(tm, 1)
     to_d = datetime.now(KST).date() - timedelta(days=1)                 # 어제까지
-    from_d = to_d - timedelta(days=cfg["lookback_days"] - 1)
+    from_d, basis = to_d - timedelta(days=cfg["lookback_days"] - 1), f"최근 {cfg['lookback_days']}일"
+    if cfg["lookback_since_change"]:     # 박스·충진율 분석은 마지막 신규 규격 입고(지난 제안 대상 월 1일) 이후만
+        changed = [x["targetMonth"] for x in state.get("past_proposals", [])
+                   if x.get("newSpecs") and f"{x['targetMonth']}-01" <= to_d.isoformat()]
+        since = date.fromisoformat(max(changed) + "-01") if changed else None
+        if since and since > from_d and (to_d - since).days >= 6:
+            from_d, basis = since, f"박스 구성 변경({since}) 이후"
     specs = await mcp_call("collect_data", "business", "list_box_specs", warehouse_id=wh)
     prods = await mcp_call("collect_data", "business", "list_product_fits", warehouse_id=wh,
                            from_date=from_d.isoformat(), to_date=to_d.isoformat())
@@ -315,7 +321,7 @@ async def collect_data(state: AgentState):
             "source": m.get("source"), "from": from_d.isoformat(), "to": to_d.isoformat()}
     log("collect_data", f"[{meta['source']}] 규격 {len(specs['items'])} 상품 {len(prods['items'])} "
                         f"재고 {len(inv['items'])}규격 출고이력 {len(hist['items'])}개월 발주이력 {len(pos['items'])}건 "
-                        f"(분석 기간 {meta['from']}~{meta['to']})")
+                        f"(박스·충진율 분석 {basis}: {meta['from']}~{meta['to']}, 출고량 예측은 월별 이력)")
     if specs.get("skipped"):
         log("collect_data", f"치수·단가 미입력으로 제외한 규격: {specs['skipped']}")
     if any(prods.get("excluded", {}).values()):

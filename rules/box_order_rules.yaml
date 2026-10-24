@@ -84,5 +84,7 @@ rules:
      source: POL-04 §2, label: 규격별 재고 보관 상한(소모분)}
   - {key: mom_note_pct, value: 30, type: float, unit: "%", range: [5, 100], scope: global, feedback: false,
      source: POL-03 §4, label: 전월 대비 금액 변동 근거 기준}
-  - {key: lookback_days, value: 90, type: int, unit: 일, range: [30, 365], scope: global, feedback: false,
+  - {key: lookback_since_change, value: false, type: bool, scope: center, feedback: false,
+     source: POL-05 §2, label: 박스·충진율 분석을 마지막 박스 구성 변경(신규 규격 입고) 이후 배정으로만}
+  - {key: lookback_days, value: 30, type: int, unit: 일, range: [7, 365], scope: center, feedback: false,
      source: POL-05 §2, label: 분석 기간(최근 출고)}
