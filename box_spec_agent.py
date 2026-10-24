@@ -678,7 +678,7 @@ def _check_items(state: AgentState, sel: list, prev_amt, ly_amt) -> list[str]:
     cu = state.get("custom_unfit")
     if cu:
         row = next((r for r in plan["orderRows"] if r["code"] == cu["code"]), None)
-        checks.append(f"보유 규격에 안 들어가는 상품 {len(cu['products'])}개(90일 출고 {n(cu['qty90d'])}건)용 "
+        checks.append(f"보유 규격에 안 들어가는 상품 {len(cu['products'])}개(월 {n(cu['qty90d'] // 3)}건)용 "
                       f"{cu['name']} 제안 — 절감이 아니라 포장 가능 여부 기준이라 도입 결정 필요")
         checks += _custom_checks(cu["name"], cu["quote"], (state.get("order_quotes") or {}).get(cu["code"]))
     checks += state.get("custom_notes") or []
@@ -824,7 +824,7 @@ def _effect(state: AgentState, sel: list) -> tuple[str, list[dict]]:
     if not blocks:
         return "이번 제안에 신규 규격 없음 — 해당 없음", [{"metric": "신규 규격 없음", "before": "—", "after": "—", "change": "—"}]
     many = len(blocks) > 1
-    basis = "최근 90일 출고의 월평균 기준 (박스 단가는 VAT 별도). " + " / ".join(
+    basis = f"분석 기간 출고를 한 달(30일)로 환산 (박스 단가는 VAT 별도). " + " / ".join(
         (f"[{name}] " if many else "") + text for name, text, _ in blocks)
     rows = [{**r, "metric": (f"[{name}] " if many else "") + r["metric"]} for name, _, rr in blocks for r in rr]
     return basis, rows
@@ -847,7 +847,7 @@ def _html_data(state: AgentState, values: dict, sel: list, checks: list[str], re
         b, a = block["load"]["before"], block["load"]["after"]
         saving = block["monthly_saving"]          # 예상 이익 = 시뮬레이션 절감액 하나 (근거 문장·md 표와 같은 값)
         if saving > 0:
-            profit = {"monthly": saving, "note": f"연 환산 {n(saving * 12)}원 · 박스비 + 운임 절감"}
+            profit = {"monthly": saving, "note": f"연 환산 {n(round(saving / 30 * 365))}원 · 박스비 + 운임 절감"}
         elif block.get("reg_fill_after") is not None:      # ESG 우선 모드: 비용은 늘지만 규제 대상 충진율 개선
             profit = {"monthly": None, "note": f"ESG 우선 모드 · 월 비용 +{n(-saving)}원, 규제 대상 충진율 "
                                                f"{block['reg_fill_before']}% → {block['reg_fill_after']}%"}
@@ -878,7 +878,7 @@ def _html_data(state: AgentState, values: dict, sel: list, checks: list[str], re
                                                     f"{n(ce['freight_krw'])}원"]]}
     rows = [{**{k: r[k] for k in ("label", "currentQty", "expectedUsage", "safetyQty", "proposedQty", "amount")},
              "isNew": r["isNew"], "isCustom": r["code"] in custom_codes} for r in plan["orderRows"]]
-    method = [reasons[3], "도입 효과·예상 이익은 최근 90일 출고의 월평균, 연 환산 = 월 × 12", FREIGHT_BASIS,
+    method = [reasons[3], "도입 효과·예상 이익은 분석 기간 출고를 한 달(30일)로 환산, 연 환산 = 월 ÷ 30 × 365", FREIGHT_BASIS,
               f"전월({values['prevMonthLabel']} 발주 {values['prevMonthAmount']}) {mom['sign']} {mom['rate']}%, "
               f"전년 동월({values['lastYearLabel']} 발주 {values['lastYearAmount']}) {yoy['sign']} {yoy['rate']}%",
               f"입력 기준 {state['data_meta']['inputAsOf']}",
