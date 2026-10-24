@@ -1,0 +1,28 @@
+# Verified SSH target: choi -> apple@chagok.cloud (macOS ARM64).
+# Install at /Users/apple/deploy/chagok-migration-20261021/agent-deploy.conf.
+COMPOSE_PROJECT_DIRECTORY=/Users/apple/deploy/chagok-migration-20261021/chagok
+COMPOSE_PROJECT_NAME=chagok-stack
+COMPOSE_FILES=(
+  "$COMPOSE_PROJECT_DIRECTORY/compose.yaml"
+  "$COMPOSE_PROJECT_DIRECTORY/compose.production.yaml"
+)
+# Preserve image selections from the other repositories. Own override is appended by the script.
+for selection in .client-deploy/frontend.image.yaml .server-deploy/backend.image.yaml .dimension-deploy/worker.image.yaml; do
+  if [ -f "$COMPOSE_PROJECT_DIRECTORY/$selection" ]; then
+    COMPOSE_FILES+=("$COMPOSE_PROJECT_DIRECTORY/$selection")
+  fi
+done
+COMPOSE_ENV_FILE="$COMPOSE_PROJECT_DIRECTORY/.env"
+DEPLOY_STATE_DIR="$COMPOSE_PROJECT_DIRECTORY/.agent-deploy"
+# All four repositories share the existing client lock, including manual deployments.
+DEPLOY_LOCK_FILE="$COMPOSE_PROJECT_DIRECTORY/.client-deploy/deploy.lock"
+IMAGE_REPOSITORY=ghcr.io/chagokai/box_agent
+DB_BACKUP_DIR=/Users/apple/deploy/chagok-migration-20261021/backups/agent-deploy
+SMOKE_BASE_URL=http://127.0.0.1:18081
+PUBLIC_BASE_URL=https://chagok.cloud
+HEALTH_TIMEOUT=300
+HTTP_ATTEMPTS=8
+HTTP_RETRY_DELAY=3
+export DOCKER_CONFIG=/Users/apple/.docker-chagok
+export DOCKER_HOST=unix:///Users/apple/.docker/run/docker.sock
+unset DOCKER_CONTEXT
