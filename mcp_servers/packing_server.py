@@ -288,16 +288,18 @@ def find_misfit_clusters(products: list[dict], max_clusters: int = 5, min_cluste
 
 @mcp.tool()
 def find_sku_candidates(products: list[dict], max_fill_pct: float = 20, min_share_pct: float = 1.0,
-                        limit: int = 5) -> dict:
+                        limit: int = 5, regulated_boxes: list[str] | None = None, id_prefix: str = "S") -> dict:
     """군집과 별도로 볼 단일 품목: 충진율 max_fill_pct 미만이고 출고 비중 min_share_pct 이상인 상품을
-    낭비 부피(박스 부피 − 상품 부피) × 출고량이 큰 순으로 limit 개. 군집과 같은 모양(SKU 1개짜리)으로 돌려준다."""
+    낭비 부피(박스 부피 − 상품 부피) × 출고량이 큰 순으로 limit 개. 군집과 같은 모양(SKU 1개짜리)으로 돌려준다.
+    regulated_boxes 를 주면 그 박스(포장 규제 대상)에 담기는 상품만 본다(충진율 목표 모드)."""
     tot = sum(p["qty90d"] for p in products) or 1
-    pick = [p for p in products if p["fill"] < max_fill_pct and 100 * p["qty90d"] / tot >= min_share_pct]
+    pick = [p for p in products if p["fill"] < max_fill_pct and 100 * p["qty90d"] / tot >= min_share_pct
+            and (regulated_boxes is None or p["box"] in regulated_boxes)]
     pick.sort(key=lambda p: -(vol(p["dims"]) * (100 / max(p["fill"], 0.1) - 1) * p["qty90d"]))
     out = []
     for i, p in enumerate(pick[:limit], 1):
         d = sdims(p["dims"])
-        out.append({"clusterId": f"S{i}", "scope": "SKU", "skus": 1, "qty90d": p["qty90d"],
+        out.append({"clusterId": f"{id_prefix}{i}", "scope": "SKU", "skus": 1, "qty90d": p["qty90d"],
                     "share_pct": round(100 * p["qty90d"] / tot, 1), "p50": d, "p90": d, "from_box": p["box"],
                     "avg_fill": p["fill"], "categories": [p.get("category") or "미분류"], "productIds": [p["productId"]],
                     "name": p.get("name") or p.get("code")})
