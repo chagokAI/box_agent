@@ -416,6 +416,7 @@ async def gen_candidates(state: AgentState):
     specs = {b["code"]: b for b in state["box_specs"]}
     cands = []
     notes: list[str] = []
+    own = {tuple(sorted(b["dims"], reverse=True)) for b in state["box_specs"]}
     if cfg["no_new_specs"]:
         log("gen_candidates", "운영자 피드백 반영: 신규 규격 없이 기존 규격만 보충")
         return {"candidates": [], "custom_unfit": None, "custom_notes": [], "messages": ["gen_candidates"]}
@@ -433,6 +434,8 @@ async def gen_candidates(state: AgentState):
         if hits.get("note"):
             log("gen_candidates", f"{c['clusterId']} 기성품: {hits['note']}")
         for it in hits["items"]:
+            if tuple(sorted(it["dims"], reverse=True)) in own:
+                continue
             cov = (await mcp_call("gen_candidates", "business", "coverage",
                                   products=prods, box_dims=it["dims"], margin_mm=m,
                                   allow_tilt=cfg["allow_tilt"],
@@ -459,8 +462,12 @@ async def gen_candidates(state: AgentState):
                           "code": f"N-맞춤 {dims_s(ideal)}", "name": f"맞춤 {dims_s(ideal)}", "dims": ideal,
                           "price": q["unitPrice"], "moq": 1, "ref": f"upackage:{q['spec']}", "coverage": cov,
                           "init_cost": q["initCost"], "quote": q})
+    dup = [x["code"] for x in cands if tuple(sorted(x["dims"], reverse=True)) in own]
+    if dup:                              # 이미 보유한 규격과 치수가 같은 후보(지난 제안으로 등록된 맞춤 규격 등)는 신규가 아니다
+        log("gen_candidates", f"보유 규격과 치수가 같아 제외: {dup}")
+        cands = [x for x in cands if tuple(sorted(x["dims"], reverse=True)) not in own]
     past = {tuple(sorted(s["dims"], reverse=True)): x["targetMonth"]
-            for x in reversed(state.get("past_proposals", [])) for s in x["newSpecs"]}
+            for x in reversed(state.get("past_proposals", [])) for s in x["newSpecs"] or []}
     for x in cands:                      # 같은 규격을 이전 제안에서도 냈다면 표시(규격 등록이 안 된 상태)
         x["proposedBefore"] = past.get(tuple(sorted(x["dims"], reverse=True)))
         log("gen_candidates", f"{x['candId']:<6} {x['type']:<7} {x['dims']} {x['price']}원 "

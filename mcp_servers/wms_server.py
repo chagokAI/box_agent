@@ -217,7 +217,9 @@ def list_box_specs(warehouse_id: str, active_only: bool = True) -> dict:
                       "description": r["description"], "sizeClass": r["sizeClass"], "dims": dims,
                       "price": r["unitPriceKrw"], "material": r["material"], "isCustom": r["isCustom"],
                       "isActive": r["isActive"], "supplier": r["supplier"], "leadTimeDays": r["leadTimeDays"],
-                      "safetyQty": r["safetyQty"]})
+                      "safetyQty": r["safetyQty"],
+                      # 승인된 AI 제안으로 등록한 기성품은 description 이 "catalog:<공급사>:<품번>" → 카탈로그 검색에서 뺀다
+                      "catalogRef": r["description"][8:] if str(r["description"] or "").startswith("catalog:") else None})
     return {"items": items, "skipped": skipped, "meta": _meta(warehouse_id)}
 
 
