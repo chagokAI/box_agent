@@ -379,7 +379,18 @@ async def find_clusters(state: AgentState):
                        products=state["product_fits"], max_clusters=cfg["max_clusters"])
     sku = await mcp_call("find_clusters", "business", "find_sku_candidates", products=state["product_fits"],
                          max_fill_pct=cfg["sku_max_fill_pct"], min_share_pct=cfg["sku_min_share_pct"], limit=cfg["sku_limit"])
-    log("find_clusters", f"군집 {r['k']}개 (가중 실루엣 {r.get('silhouette')}) + 단일 품목 {len(sku['clusters'])}개")
+    fill = {"clusters": []}
+    reg = [b["code"] for b in state["box_specs"] if sum(b["dims"]) > 500]
+    if cfg["fill_mode"] and cfg["fill_sku_limit"]:   # 충진율 목표 모드: 규제 대상 박스의 저충진 상품 전용 후보(POL-02 §7)
+        seen = {pid for c in sku["clusters"] for pid in c["productIds"]}
+        fill = await mcp_call("find_clusters", "business", "find_sku_candidates", products=state["product_fits"],
+                              max_fill_pct=cfg["fill_target_pct"], min_share_pct=0, limit=cfg["fill_sku_limit"] + len(seen),
+                              regulated_boxes=reg, id_prefix="F")
+        fill["clusters"] = [c for c in fill["clusters"] if c["productIds"][0] not in seen][:cfg["fill_sku_limit"]]
+    sku["clusters"] = [{**c, "fill_target": cfg["fill_mode"] and c["from_box"] in reg} for c in sku["clusters"]] + [
+        {**c, "fill_target": True} for c in fill["clusters"]]
+    log("find_clusters", f"군집 {r['k']}개 (가중 실루엣 {r.get('silhouette')}) + 단일 품목 {len(sku['clusters'])}개"
+                         + (f" (충진율 목표 상품 {len(fill['clusters'])}개)" if fill["clusters"] else ""))
     for c in r["clusters"] + sku["clusters"]:
         log("find_clusters", f"{c['clusterId']} {c.get('name') or cats(c)} SKU {c['skus']}개 비중 {c['share_pct']}% "
                              f"P50={c['p50']} 현재 {c['from_box']} 충진율 {c['avg_fill']}%")
@@ -419,7 +430,8 @@ async def gen_candidates(state: AgentState):
                               "price": it["price"], "moq": it["moq"], "ref": f"{it['supplier']}:{it['goodsNo']}",
                               "coverage": cov, "init_cost": 0})
                 break
-        if not cfg["no_custom"] and not any(x["cluster"] == c["clusterId"] for x in cands):
+        # 충진율 목표 상품은 기성품이 있어도 상품 치수에 맞춘 맞춤 후보를 함께 본다(가는·작은 상품은 규제 대상에서 빠짐)
+        if not cfg["no_custom"] and (c.get("fill_target") or not any(x["cluster"] == c["clusterId"] for x in cands)):
             q = await _quote_custom("gen_candidates", ideal, sum(p["qty90d"] for p in prods))
             if not q["ok"]:
                 notes.append(f"{c['clusterId']} {c.get('name') or cats(c)} 구간: 기성품 후보 없음, {q['note']}")
