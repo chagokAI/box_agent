@@ -12,6 +12,8 @@ wms 도구 — 차곡 업무 데이터 조회 전용 (business-mcp 에 묶여 �
 - 발주 대상 월 = 연결된 procurement_proposal.target_month, 없으면 납품 희망일(requested_delivery_date)의 월.
 - 발주 금액 = Σ purchase_order_item.qty × unit_price_krw
 - 상품 분류 = category.name(`대분류 > 중분류`), 미매칭 이벤트(product_id 없음)는 상품별 출고량에서 빠지고 월별 건수에는 들어간다.
+- 현재 박스 = 서버가 포장하며 저장한 실제 배정(item_event.box_spec_id, /box-usage). 에이전트는 따로 배정하지 않는다.
+  쓸 박스가 없어 대기(NO_AVAILABLE_BOX)한 건은 box=None 행으로 온다.
 """
 import calendar
 import os
@@ -142,8 +144,7 @@ def _mock_products(seed: int = 7) -> list:
             d = np.maximum(20, rng.normal(mean, sd)).round().astype(int).tolist()
             code = f"{prefix}-{10000 + len(items)}"
             items.append({"productId": f"mock-{code}", "code": code, "name": name, "category": cat,
-                          "dims": d, "qty90d": int(rng.integers(*qty_range)), "matchedBox": None,
-                          "fillRatePct": None})
+                          "dims": d, "qty90d": int(rng.integers(*qty_range))})
 
     add(38, "BT", "화장품 세트", [212, 146, 50], [4, 3, 3], (300, 1400), "뷰티")
     add(22, "LV", "접이식 우산", [370, 85, 70], [10, 5, 5], (150, 500), "생활용품")
@@ -151,6 +152,13 @@ def _mock_products(seed: int = 7) -> list:
     add(40, "OD", "캠핑 랜턴", [280, 230, 130], [6, 5, 5], (80, 380), "아웃도어")
     add(30, "FS", "스니커즈", [330, 210, 120], [6, 5, 5], (80, 450), "패션")
     add(10, "SP", "요가 매트", [610, 150, 150], [5, 4, 4], (60, 200), "스포츠")
+    # 목업의 실제 배정: 서버처럼 들어가는 가장 작은 박스(정렬 치수 비교)
+    specs = sorted(_standard_box_specs(), key=lambda b: b["dims"][0] * b["dims"][1] * b["dims"][2])
+    for it in items:
+        d = sorted(it["dims"], reverse=True)
+        b = next((b for b in specs if all(x <= y for x, y in zip(d, sorted(b["dims"], reverse=True)))), None)
+        it["box"] = b["code"] if b else None
+        it["serverFill"] = round(100 * d[0] * d[1] * d[2] / (b["dims"][0] * b["dims"][1] * b["dims"][2]), 2) if b else None
     return items
 
 
@@ -214,25 +222,36 @@ def list_box_specs(warehouse_id: str, active_only: bool = True) -> dict:
 
 @mcp.tool()
 def list_product_fits(warehouse_id: str, from_date: str, to_date: str) -> dict:
-    """상품별 치수([가로, 세로, 높이] mm)와 기간(from_date~to_date, YYYY-MM-DD, KST) 내 출고 수량(qty90d)을 반환한다.
-    치수가 없거나 기간 내 출고가 없는 상품은 제외하고 건수만 알려 준다."""
+    """기간(from_date~to_date, YYYY-MM-DD, KST) 내 실제 포장 배정을 상품 × 박스 행으로 반환한다.
+    행: productId(상품이 박스 여러 개에 나뉘면 '상품ID@박스코드'), pid(상품ID), 치수([가로, 세로, 높이] mm),
+    box(서버가 배정한 박스 코드, 쓸 박스가 없어 대기한 건은 None), qty(기간 내 실제 건수),
+    qty90d(90일 환산 건수 = qty × 90 ÷ 기간 일수 — 계산 도구는 ÷ 3 을 한 달(30일)로 쓴다), serverFill(서버 충진율 평균 %).
+    치수가 없거나 기간 내 배정이 없는 상품은 제외하고 건수만 알려 준다."""
     if not api.enabled():
-        return {"items": _mock_products(), "excluded": {"noDims": 0, "noShipments": 0}, "meta": MOCK_META,
+        return {"items": [{**p, "pid": p["productId"]} for p in _mock_products()], "excluded": {"noDims": 0, "noShipments": 0}, "meta": MOCK_META,
                 "period": {"from": from_date, "to": to_date}}
     rows = _call(api.get, f"/warehouses/{warehouse_id}/product-shipments", **{"from": from_date, "to": to_date},
                  statuses=EVENT_STATUSES or None)
+    days = (datetime.fromisoformat(to_date) - datetime.fromisoformat(from_date)).days + 1
+    usage = {}
+    for u in _call(api.get, f"/warehouses/{warehouse_id}/box-usage", **{"from": from_date, "to": to_date}):
+        usage.setdefault(u["productId"], []).append(u)
     items, no_dims, no_ship = [], 0, 0
     for r in rows:
         dims = [r["widthMm"], r["depthMm"], r["heightMm"]]
         if None in dims or min(dims) <= 0:
             no_dims += 1
             continue
-        if r["shipments"] == 0:
+        used = usage.get(r["productId"], [])
+        if not used:
             no_ship += 1
             continue
-        items.append({"productId": r["productId"], "code": r["code"], "name": r["name"],
-                      "category": r["category"] or "미분류", "dims": dims, "weightG": r.get("weightG"), "qty90d": r["shipments"],
-                      "matchedBox": r["matchedBox"], "fillRatePct": r["fillRatePct"]})
+        for u in used:
+            items.append({"productId": r["productId"] if len(used) == 1 else f"{r['productId']}@{u['boxCode']}",
+                          "pid": r["productId"], "code": r["code"], "name": r["name"],
+                          "category": r["category"] or "미분류", "dims": dims, "weightG": r.get("weightG"),
+                          "box": u["boxCode"], "qty": u["shipments"], "qty90d": round(u["shipments"] * 90 / days),
+                          "serverFill": u["fillRatePct"]})
     return {"items": items, "excluded": {"noDims": no_dims, "noShipments": no_ship},
             "meta": _meta(warehouse_id), "period": {"from": from_date, "to": to_date}}
 
