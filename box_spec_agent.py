@@ -193,6 +193,7 @@ class AgentState(TypedDict, total=False):
     template: dict                            # 회사 양식
     proposal_md: str                          # 제안서 본문 (회사 양식 markdown, 검토·평가 대상)
     proposal_html: str                        # 보기용 HTML 제안서 (templates/box_order_proposal.html)
+    proposal_html_data: dict                  # 그 HTML 의 입력(양식만 바뀌면 render_proposal_html 로 다시 그린다)
     client_view: dict                         # client BoxOrderView(mocks/orders.js proposal) 모양
     review: dict                              # score, feedback, loop_count
     approval: dict                            # status, comment
@@ -1015,8 +1016,8 @@ async def write_proposal(state: AgentState):
 
     r = await mcp_call("write_proposal", "business", "render_proposal", values=values, rows=rows, check_items=checks,
                        effect_rows=effect_rows)
-    h = await mcp_call("write_proposal", "business", "render_proposal_html",
-                       data=_html_data(state, values, sel, checks, [reason1, reason2, reason3, formula], mom, yoy))
+    html_data = _html_data(state, values, sel, checks, [reason1, reason2, reason3, formula], mom, yoy)
+    h = await mcp_call("write_proposal", "business", "render_proposal_html", data=html_data)
     if h["missing"]:
         log("write_proposal", f"HTML 제안서 미기입 {h['missing']}")
 
@@ -1049,7 +1050,7 @@ async def write_proposal(state: AgentState):
     client_view["sources"] = [{"sourceId": k, **v} for k, v in sources.items()]
     for i in range(0, len(r["markdown"]), 400):          # 화면 답변 영역(TOKEN). 초안마다 draft 번호로 구분
         harness.emit("TOKEN", draft=rv["loop_count"], text=r["markdown"][i:i + 400])
-    return {"template": tpl, "proposal_md": r["markdown"], "proposal_html": h["html"], "client_view": client_view, "review": rv, "llm": llm,
+    return {"template": tpl, "proposal_md": r["markdown"], "proposal_html": h["html"], "proposal_html_data": html_data, "client_view": client_view, "review": rv, "llm": llm,
             "citations": citations, "sources": sources, "messages": ["write_proposal"]}
 
 
