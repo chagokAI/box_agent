@@ -1,4 +1,7 @@
 .env
+.env.*
+.git
+.github
 .venv
 **/__pycache__
 proposals
@@ -6,3 +9,8 @@ tests/results
 run_mcp.log
 *.db-journal
 test.db
+*.db
+*.db-*
+_handoff*
+sql
+.DS_Store

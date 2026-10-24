@@ -1,5 +1,7 @@
 # 박스 주문 제안 에이전트 (LangGraph + MCP + Harness)
 
+[CI/CD 배포 안내](docs/cicd.md) — GitHub Actions, GHCR, SSH 배포 및 롤백.
+
 다음 달 박스 주문 제안서를 회사 양식(`mcp_servers/templates/box_order_proposal.md`)대로 작성한다.
 충진율이 낮은 치수 구간을 찾아 기준을 넘는 신규 규격은 주문에 포함하고, 대체되는 기존 박스 소모는 줄여 반영한다.
 범위는 제안서까지(발주서는 만들지 않음).

@@ -2,14 +2,18 @@
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV CATALOG_DB=/app/proposals/catalog.db
 RUN groupadd --system app && useradd --system --gid app --home-dir /app app
 WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-# 코드·양식·규정 문서·박스왕 카탈로그(catalog.db). .env 는 넣지 않는다(.dockerignore) — 설정은 compose 환경변수로
-COPY --chown=app:app . .
+# Runtime files only. Catalog data lives in the proposals volume, outside the image.
+COPY --chown=app:app agent_server.py box_spec_agent.py harness.py llm_writer.py initialize_knowledge.py ./
+COPY --chown=app:app mcp_servers ./mcp_servers
+COPY --chown=app:app knowledge ./knowledge
+COPY --chown=app:app prompts ./prompts
 RUN mkdir -p /app/proposals && chown app:app /app/proposals
 USER app
 
