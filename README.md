@@ -269,9 +269,13 @@ BOXKING_BASE_URL=http://127.0.0.1:8765 BOXKING_MIN_DELAY=0 CATALOG_DB=test.db py
 - 저장: `summary.newSpecs` 에 `type` = `CUSTOM` / `CUSTOM_UNFIT`, `quote`(1차), `orderQuote`(2차), `initCost`
 - 단독 확인: `python mcp_servers/custom_quote_server.py --quote 300 200 150 1000`
 
-## 운임 (경동 정기화물)
-- 운임표: `mcp_servers/templates/kyungdong_regular_freight.md`(`FREIGHT_TABLE`, 2026-10-22 추출). 실행할 때 md 표를 읽는다
-- 1건 운임: 50,000㎤ 이하(소화물)는 소화물 표준운임(부피)만, 그 위는 경동 부피요율표(㎤)와 무게 운임(중대형화물 표준운임 → 운임표 4, kg) 중
+## 운임 (택배 기본요금, 한도 초과는 경동 정기화물)
+- 기본: 택배 기본요금표 `mcp_servers/templates/parcel_basic_fee.md`(`PARCEL_TABLE`, 법제처 찾기쉬운 생활법령 2026-09-15 기준).
+  B2C 이커머스 출고(주문 1건 = 박스 1개)라 정기화물보다 택배 요금이 맞다. 세 변 합 등급과 무게 등급 중 높은 등급, 동일권 요금
+  (극소 60cm·2kg 5,000원 / 소 120cm·10kg 6,000원 / 중 140cm·20kg 7,000원 / 대 160cm·30kg 8,000원). 실제 계약 단가가 있으면 표를 바꾼다
+- 세 변 합 160cm·무게 30kg·최장변 100cm 를 넘는 박스만 아래 정기화물 운임
+- 정기화물 운임표: `mcp_servers/templates/kyungdong_regular_freight.md`(`FREIGHT_TABLE`, 2026-10-22 추출). 실행할 때 md 표를 읽는다
+- 정기화물 1건 운임: 50,000㎤ 이하(소화물)는 소화물 표준운임(부피)만, 그 위는 경동 부피요율표(㎤)와 무게 운임(중대형화물 표준운임 → 운임표 4, kg) 중
   높은 금액. 부피 = 배정 박스 내치수(외치수 없음), 무게 = 상품 실중량(`product.weight_g`, 박스 무게 제외). 무게가 없으면 부피 운임만
 - 표 문구("부피 및 무게 운임 중 높은 금액")를 소화물에도 그대로 적용하면 무게표 최저 4,500원 때문에 소화물 3,000~4,000원 구간이
   쓰이지 않는다 → 운영 판단(2026-10-22)으로 소화물은 부피 운임 우선. 문구 그대로 계산은 `FREIGHT_MODE=max`

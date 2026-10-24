@@ -754,8 +754,9 @@ def _pct(before, after) -> str:
     return f"{(after / before - 1) * 100:+.1f}%" if before else "—"
 
 
-FREIGHT_BASIS = ("경동 정기화물 운임표 — 50,000㎤ 이하는 소화물 부피 운임, 그 위는 부피·무게 운임 중 높은 금액. "
-                 "박스 1개 = 1건, 부피는 박스 내치수, 무게는 상품 실중량(박스 무게 제외)")
+FREIGHT_BASIS = ("택배 기본요금표(법제처 생활법령, 2026-09-15) — 세 변 합·무게 등급 중 높은 등급, 동일권 요금(극소 60cm·2kg 5,000원 / "
+                 "소 120cm·10kg 6,000원 / 중 140cm·20kg 7,000원 / 대 160cm·30kg 8,000원). 160cm·30kg·최장변 100cm 초과는 경동 정기화물. "
+                 "박스 1개 = 1건, 크기는 박스 내치수, 무게는 상품 실중량(박스 무게 제외)")
 
 
 def _won_change(b, a) -> str:
@@ -782,7 +783,7 @@ def _load_rows(comb: dict, before_price: str, after_price: str) -> list[dict]:
         {"metric": "박스 단가", "before": before_price, "after": after_price, "change": "—"},
         {"metric": "월 박스비", "before": f"{n(b['box_krw'])}원", "after": f"{n(a['box_krw'])}원",
          "change": _won_change(b["box_krw"], a["box_krw"])},
-        {"metric": "월 운임(경동 정기화물)", "before": f"{n(b['freight_krw'])}원", "after": f"{n(a['freight_krw'])}원",
+        {"metric": "월 운임(택배)", "before": f"{n(b['freight_krw'])}원", "after": f"{n(a['freight_krw'])}원",
          "change": _won_change(b["freight_krw"], a["freight_krw"])},
         {"metric": "월 박스비 + 운임", "before": f"{n(b['box_krw'] + b['freight_krw'])}원",
          "after": f"{n(b['box_krw'] + b['freight_krw'] - comb['monthly_saving'])}원",      # 전 − 절감액 (예상 이익과 같은 값)
@@ -824,7 +825,7 @@ def _effect(state: AgentState, sel: list) -> tuple[str, list[dict]]:
                         {"metric": "박스 단가", "before": nf, "after": f"{n(oq['unitPrice'])}원 (유팩 참고 견적)", "change": "—"},
                         {"metric": "대상 출고 충진율", "before": nf, "after": f"{ce['fill']}%", "change": "—"},
                         {"metric": "월 박스비", "before": nf, "after": f"{n(box_krw)}원", "change": "—"},
-                        {"metric": "월 운임(경동 정기화물)", "before": nf, "after": f"{n(ce['freight_krw'])}원", "change": "—"}]))
+                        {"metric": "월 운임(택배)", "before": nf, "after": f"{n(ce['freight_krw'])}원", "change": "—"}]))
     if not blocks:
         return "이번 제안에 신규 규격 없음 — 해당 없음", [{"metric": "신규 규격 없음", "before": "—", "after": "—", "change": "—"}]
     many = len(blocks) > 1

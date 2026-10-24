@@ -8,7 +8,8 @@ AI가 직접 하면 틀리기 쉬운 계산은 전부 여기서 한다. 상태�
 한 평면 기울임(Carver 조건, fits_tilted)을 적용한다. 기울임 배정은 fit="TILTED"로 표시하고 검토 대상으로 둔다.
 충진율은 기울임과 관계없이 부피비(상품 부피 / 박스 부피).
 
-운임: 경동 정기화물 운임표(templates/kyungdong_regular_freight.md, FREIGHT_TABLE)로 박스 1개씩 계산한다.
+운임: 택배 기본요금표(templates/parcel_basic_fee.md, 법제처 생활법령, PARCEL_TABLE)로 박스 1개씩 계산한다.
+  세 변 합 160cm·무게 30kg·최장변 100cm 를 넘는 박스만 경동 정기화물 운임표(templates/kyungdong_regular_freight.md, FREIGHT_TABLE).
   - 50,000㎤ 이하(소화물): 소화물 표준운임(부피)만. 무게 운임은 보지 않는다
   - 50,000㎤ 초과: 경동 부피요율표(㎤)와 무게 운임(중대형화물 표준운임 → 운임표 4, kg) 중 높은 금액
   부피 = 박스 내치수(외치수 없음), 무게 = 상품 실중량(weightG, 박스 무게 없음). 무게가 없으면 부피 운임만.
@@ -49,7 +50,22 @@ def _load_freight(path: Path) -> tuple[list, list]:
 
 VOL_TIERS, WT_TIERS = _load_freight(FREIGHT_TABLE)
 SMALL_PARCEL_CM3 = 50_000                 # 소화물 표준운임 표의 상한
-FREIGHT_MODE = os.getenv("FREIGHT_MODE", "split")   # split(기본) | max
+FREIGHT_MODE = os.getenv("FREIGHT_MODE", "split")   # split(기본) | max  — 정기화물 표 적용 방식
+PARCEL_TABLE = Path(os.getenv("PARCEL_TABLE", Path(__file__).resolve().parent / "templates" / "parcel_basic_fee.md"))
+
+
+def _load_parcel(path: Path) -> list:
+    """택배 기본요금표 md → [(무게 kg 상한, 세 변 합 cm 상한, 동일권 요금)] 등급 순"""
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) >= 4 and cells[1].isdigit() and cells[2].isdigit():
+            rows.append((int(cells[1]), int(cells[2]), int(cells[3])))
+    return rows
+
+
+PARCEL_TIERS = _load_parcel(PARCEL_TABLE)
+PARCEL_MAX_SIDE_CM = 100                  # 택배 최장변 한도
 
 
 # ---------------------------------------------------------------- 계산 함수
@@ -100,6 +116,17 @@ def _tier_fee(tiers, x):
 
 
 def ship_fee(box_dims, weight_g=None):
+    """박스 1개 운임. 기본은 택배 기본요금표(크기·무게 등급 중 높은 등급, 동일권).
+    세 변 합·무게·최장변이 택배 한도를 넘으면 경동 정기화물 운임으로 계산한다"""
+    side_cm, long_cm, kg = sum(box_dims) / 10, max(box_dims) / 10, (weight_g or 0) / 1000
+    if side_cm <= PARCEL_TIERS[-1][1] and kg <= PARCEL_TIERS[-1][0] and long_cm <= PARCEL_MAX_SIDE_CM:
+        size = next(i for i, t in enumerate(PARCEL_TIERS) if side_cm <= t[1])
+        wt = next(i for i, t in enumerate(PARCEL_TIERS) if kg <= t[0])
+        return PARCEL_TIERS[max(size, wt)][2]
+    return _freight_fee(box_dims, weight_g)
+
+
+def _freight_fee(box_dims, weight_g=None):
     """경동 정기화물 1건 운임: 소화물(50,000㎤ 이하)은 부피 운임만, 그 위는 부피·무게 운임 중 높은 금액"""
     cm3, fee = vol(box_dims) / 1000, _tier_fee(VOL_TIERS, vol(box_dims) / 1000)
     if not weight_g or (FREIGHT_MODE != "max" and cm3 <= SMALL_PARCEL_CM3):
