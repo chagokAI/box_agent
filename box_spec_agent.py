@@ -540,7 +540,8 @@ async def simulate(state: AgentState):
     lim = await mcp_call("simulate", "business", "check_spec_limit", products=lim_products, box_specs=specs,
                          new_specs=new, max_active=cfg["spec_max_active"], **opts)
     if lim["drop"]:
-        keep = [c for c in state["candidates"] if c["code"] not in lim["drop"]]
+        picked = {x["candId"] for x in r["results"] if x["selected"]}
+        keep = [c for c in state["candidates"] if c["candId"] in picked and c["code"] not in lim["drop"]]
         r = await mcp_call("simulate", "business", "simulate_boxset", products=state["product_fits"], box_specs=specs,
                            candidates=keep, gate=cfg["gate"], fill_mode=_fill_mode(cfg), **opts)
         sel = [x["candId"] for x in r["results"] if x["selected"]]
