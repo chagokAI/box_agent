@@ -177,13 +177,14 @@ business-mcp 는 **DB 에 직접 접근하지 않고** Spring `/internal/v1/**` 
 | `GET /warehouses` | list_warehouses |
 | `GET /warehouses/{id}/box-specs?activeOnly=` | list_box_specs, get_box_inventory |
 | `GET /warehouses/{id}/event-stats` | 모든 조회의 meta(입력 기준 시각·status별 건수·PENDING 수) |
-| `GET /warehouses/{id}/product-shipments?from&to&statuses` | list_product_fits (치수·`weightG`·출고 수) |
+| `GET /warehouses/{id}/product-shipments?from&to&statuses` | list_product_fits (치수·`weightG`) |
+| `GET /warehouses/{id}/box-usage?from&to` | list_product_fits (서버가 저장한 실제 배정: 상품 × 박스 건수·충진율, 포장 대기 NO_AVAILABLE_BOX) |
 | `GET /warehouses/{id}/monthly-shipments?fromMonth&toMonth&statuses` | get_shipment_history |
 | `GET /warehouses/{id}/purchase-orders?from&to` | list_purchase_orders |
 | `GET /warehouses/{id}/procurement-proposals?limit` | list_past_proposals |
 | `PUT /warehouses/{id}/procurement-proposals/{proposalId}` | save_proposal (한 트랜잭션, 센터·규격 소속 검증) |
 
-- 기간은 센터 시간대(Asia/Seoul) 날짜로 Spring 이 해석한다. 출고 1건 = `item_event` 1행(`SHIPMENT_EVENT_STATUSES`로 status 제한 가능).
+- 기간은 센터 시간대(Asia/Seoul) 날짜로 Spring 이 해석한다. 출고 1건 = `item_event` 1행. 기본은 박스를 쓰는 출고(SUCCEEDED·WAITING)만 센다(`SHIPMENT_EVENT_STATUSES`로 바꿀 수 있음, 식별 실패 FAILED 는 박스를 쓰지 않아 제외).
   진행 중인 달은 경과 일수로 한 달치 환산(business-mcp)
 - 발주 대상 월 = 연결된 `procurement_proposal.target_month`, 없으면 납품 희망일의 월.
   전월·전년 비교 금액은 제안서로 만든 정기 발주(`proposal_id` 있음)만, 없으면 반려 제외 전체 합계
@@ -282,6 +283,11 @@ BOXKING_BASE_URL=http://127.0.0.1:8765 BOXKING_MIN_DELAY=0 CATALOG_DB=test.db py
   `운임 기준` 문장(`freightBasis`)
 
 ## 들어가는지 판정·충진율 (packing-engine)
+- **현재 박스는 서버가 포장하며 저장한 실제 배정**(`item_event.box_spec_id`·`fill_rate_pct`, `/box-usage`)을 쓴다. 에이전트가 따로 배정하지 않는다.
+  상품이 여러 박스로 나갔으면(품절·수동 매칭) 상품 × 박스 행으로 나눈다. 쓸 박스가 없어 대기한 건은 보유 규격에 들어가면 '품절 대기'
+  (확인 필요 + 보충되면 그 박스 소모로 계산), 안 들어가면 맞춤 제작 대상
+- 신규 후보 효과만 가정 계산이다: 실제 배정에서 출발해, 새 박스가 들어가고 지금 박스보다 작으면 그 박스로 옮긴다(서버 매칭 규칙).
+  기존 박스끼리는 다시 배정하지 않는다. 최근 도입 효과는 그 박스가 없었다면 서버가 골랐을 박스와 비교한다
 - 상품 치수를 6방향 회전(90도)으로 먼저 본다.
 - 판정 기준은 서버 상품 매칭(`FillRateCalculator`)과 같다. 매 실행 `GET /internal/v1/matching-policy`로 서버 `chagok.matching.tilted`(기울임 사용·여유)를 읽고, 기본 판정 여유는 0mm. 기울임이 켜져 있으면 안 들어가는 박스에 한 평면 기울임 판정(Carver 조건)을 적용한다:
   상품 변 (p,q,r) × 박스 변 (a,b,c)의 모든 순서에서 r ≤ c 이고 rectFits(p,q,a,b)이면 들어감.
@@ -294,7 +300,7 @@ BOXKING_BASE_URL=http://127.0.0.1:8765 BOXKING_MIN_DELAY=0 CATALOG_DB=test.db py
 - 배송 중(IN_TRANSIT) 발주가 있는 동안에는 제안서 작업을 하지 않는다는 운영 전제라 들어올 재고는 따로 빼지 않는다.
 
 ## 주문 수량 계산
-- 다음 달 예상 소모 = 예측 출고 × (신규 규격 포함 박스 세트로 재배정한 규격별 사용 비중)
+- 다음 달 예상 소모 = 예측 출고 × 규격별 사용 비중(실제 배정 + 신규 규격으로 옮겨 가는 출고 + 품절 대기)
 - 안전 재고 = 일평균 예상 소모 × 7일, 제안 수량 = 예상 소모 + 안전 재고 − 현재 재고 (100개 단위 반올림)
 - 출고 예측 = 최근 3개월 평균 × 전년 동월 계절 지수, 정확도 = 100 − 최근 6개월 백테스트 MAPE
   (`mcp_servers/forecast_server.py` 의 `forecast_shipments`, 규칙 계산이며 LLM을 쓰지 않음)

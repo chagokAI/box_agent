@@ -179,7 +179,7 @@ SSE 이벤트: `TOOL_START`·`TOOL_END`(node·tool) · `TOKEN`(초안 본문) ·
 `GET /internal/agent/tasks/{id}/events`(SSE, Last-Event-ID) · `POST /internal/agent/tasks/{id}/approval` · `GET /internal/agent/health`
 
 ### business-mcp → BE (`X-Internal-Token`, `/internal/v1`)
-`GET /matching-policy` · `GET /warehouses` · `GET /warehouses/{wid}/box-specs` · `/event-stats` · `/product-shipments?from&to` ·
+`GET /matching-policy` · `GET /warehouses` · `GET /warehouses/{wid}/box-specs` · `/event-stats` · `/product-shipments?from&to` · `/box-usage?from&to` ·
 `/monthly-shipments?fromMonth&toMonth` · `/purchase-orders?from&to` · `/procurement-proposals?limit` ·
 `PUT /warehouses/{wid}/procurement-proposals/{proposalId}`
 
