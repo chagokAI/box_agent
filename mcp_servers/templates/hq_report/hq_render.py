@@ -82,7 +82,8 @@ def report(mi):
         why = "이번 달 제안 반려" if not d["approved"] else "절감 기준을 넘는 새 후보 없음"
         res = (f"재실행(ESG 우선 모드) 결과 신규 {len(rr.get('new', []))}종 반영, 충진율 "
                f"{rr.get('fill_before')}% → <b>{rr.get('fill_after')}%</b>"
-               + (f", 월 비용 {'+' if rr['saving_change'] < 0 else '−'}{won(abs(rr['saving_change']))}" if rr.get("saving_change") else "")
+               + (f", 월 절감 {sgn(rr['saving_change'])}" if rr.get("saving_change") else "")
+               + (f". 규격 상한에 걸려 <b>본부장 승인으로 상한 {rr['cap']['from']}→{rr['cap']['to']}종 상향</b>" if rr.get("cap") else "")
                if rr.get("new") else "재실행했으나 ESG 우선 모드 기준(+2%p, 월 추가 비용 30만 원 이내)을 넘는 후보 없음 → 담당자 검토(봉투 포장, 한도 조정)")
         return (f"<li><b>{d['center']}</b> — 1차 후 충진율 {d['prev_fill']}% → {rr['fill_before']}%"
                 f"(전월 대비 {rr['fill_before'] - d['prev_fill']:+.1f}%p, {why}). {res} → 최종 전월 대비 {d['gain']:+.1f}%p, <b>{d['status']}</b></li>")
