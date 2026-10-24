@@ -55,13 +55,13 @@ rules:
   - {key: fill_target_pct, value: 50, type: float, unit: "%", range: [20, 90], scope: center, feedback: false,
      source: POL-02 §7, label: 포장 규제 대상 출고 충진율 목표}
   - {key: fill_mode, value: false, type: bool, scope: center, feedback: true,
-     source: POL-02 §7, label: 충진율 목표 모드(절감 대신 충진율 개선으로 선정)}
+     source: POL-02 §7, label: ESG 우선 모드(ISO 18602 기준, 절감 대신 충진율 개선으로 선정)}
   - {key: fill_mode_min_gain, value: 2, type: float, unit: "%p", range: [0.5, 20], scope: center, feedback: false,
-     source: POL-02 §7, label: 목표 모드 후보의 규제 대상 충진율 최소 개선}
+     source: POL-02 §7, label: ESG 우선 모드 후보의 규제 대상 충진율 최소 개선}
   - {key: fill_mode_max_extra_cost, value: 300000, type: int, unit: 원, range: [0, 5000000], scope: center, feedback: true,
-     source: POL-02 §7, label: 목표 모드 월 추가 비용 한도}
+     source: POL-02 §7, label: ESG 우선 모드 월 추가 비용 한도}
   - {key: fill_sku_limit, value: 5, type: int, unit: 개, range: [0, 20], scope: center, feedback: false,
-     source: POL-02 §7, label: 목표 모드 상품 전용 후보 최대 개수(규제 대상 저충진 상품)}
+     source: POL-02 §7, label: ESG 우선 모드 상품 전용 후보 최대 개수(규제 대상 저충진 상품)}
 
   # ── 규격 수 상한 (POL-02 §3) ────────────────────────────────────────────
   - {key: spec_max_active, value: 15, type: int, unit: 종, range: [3, 30], scope: center, feedback: false,

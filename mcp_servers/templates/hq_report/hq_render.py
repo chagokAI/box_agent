@@ -65,10 +65,10 @@ def report(mi):
     def act(d):
         rr = d.get("rerun") or {}
         why = "이번 달 제안 반려" if not d["approved"] else "절감 기준을 넘는 새 후보 없음"
-        res = (f"재실행(충진율 목표 모드) 결과 신규 {len(rr.get('new', []))}종 반영, 충진율 "
+        res = (f"재실행(ESG 우선 모드) 결과 신규 {len(rr.get('new', []))}종 반영, 충진율 "
                f"{rr.get('fill_before')}% → <b>{rr.get('fill_after')}%</b>"
                + (f", 월 비용 {'+' if rr['saving_change'] < 0 else '−'}{won(abs(rr['saving_change']))}" if rr.get("saving_change") else "")
-               if rr.get("new") else "재실행했으나 목표 모드 기준(+2%p, 월 추가 비용 30만 원 이내)을 넘는 후보 없음 → 담당자 검토(봉투 포장, 한도 조정)")
+               if rr.get("new") else "재실행했으나 ESG 우선 모드 기준(+2%p, 월 추가 비용 30만 원 이내)을 넘는 후보 없음 → 담당자 검토(봉투 포장, 한도 조정)")
         return (f"<li><b>{d['center']}</b> — 1차 후 충진율 {d['prev_fill']}% → {rr['fill_before']}%"
                 f"(전월 대비 {rr['fill_before'] - d['prev_fill']:+.1f}%p, {why}). {res} → 최종 전월 대비 {d['gain']:+.1f}%p, <b>{d['status']}</b></li>")
     lowhtml = "".join(act(d) for d in rer) or "<li>이번 달 재실행 센터 없음</li>"
@@ -130,7 +130,7 @@ def report(mi):
 <svg id="bars" viewBox="0 0 820 {len(rows) * 46 + 10}" width="100%" role="img" aria-label="센터별 월 절감액과 탄소 감축"></svg>
 <table><tr><th>순위</th><th>센터</th><th>출고</th><th>이번 달 절감 <small>전월 대비</small></th><th>연간 추정</th><th>탄소 감축 <small>전월 대비</small></th><th>충진율 <small>전월 대비</small></th><th>개선 반영</th></tr>{tr}</table></section>
 <section><h2>월별 추이 <small>전 센터 월 절감 수준 (도입 전 대비)</small></h2><svg id="trend" viewBox="0 0 820 220" width="100%" role="img" aria-label="월별 절감액 추이"></svg></section>
-<section><h2>이번 달 재실행과 결과 <small>1차 후 목표 미달·전월 대비 +2%p 미만 → 충진율 목표 모드로 재실행</small></h2><ul class="act">{lowhtml}</ul></section>
+<section><h2>이번 달 재실행과 결과 <small>1차 후 목표 미달·전월 대비 +2%p 미만 → ESG 우선 모드로 재실행</small></h2><ul class="act">{lowhtml}</ul></section>
 <details><summary>상세보기</summary>
 <h3>산정 기준</h3><ul>
 <li>운송 탄소: 필요 운행 = 박스 적재 부피 ÷ (7.168 m³ × 적재 효율 70%), 운행당 80 km ÷ 9.0 km/L × 경유 3.44 kg CO₂e/L (GLEC v3.0 WTW, STD-01·04)</li>
@@ -141,7 +141,7 @@ def report(mi):
 <li>절감 기준 하향: 전월에 새 규격이 없던 센터는 그달 신규 규격 기준을 월 절감 30만 → 3만 원, 대상 충진율 개선 +10 → +3%p, 출고 비중 3 → 1%로 낮춰 제안(본부 센터별 조정)</li>
 <li>개선 반영: 그달 승인되어 반영된 개선 제안 건수(신규 규격 도입 등)</li>
 <li>판정 (목표: 포장 규제 대상 출고 충진율 50%, POL-02 §7) — 양호: 50% 이상 / 주의: 미달이지만 전월 대비 +2%p 이상 개선 / 효율 개선 필요: 미달이면서 +2%p 미만(정체, 반려 포함)</li>
-<li>센터별로 한 달에 한 번 제안·개선하고, 1차 후 목표 미달이면서 전월 대비 +2%p 미만인 센터는 같은 달에 충진율 목표 모드(규제 대상 충진율 +2%p 이상, 월 추가 비용 30만 원 이내)로 한 번 더 제안한다. 양호·주의·개선 필요 판정과 카드·표의 값은 재실행 반영 후 기준</li>
+<li>센터별로 한 달에 한 번 제안·개선하고, 1차 후 목표 미달이면서 전월 대비 +2%p 미만인 센터는 같은 달에 ESG 우선 모드(ISO 18602 기준 · 규제 대상 충진율 +2%p 이상, 월 추가 비용 30만 원 이내)로 한 번 더 제안한다. 양호·주의·개선 필요 판정과 카드·표의 값은 재실행 반영 후 기준</li>
 <li>요약 — 이번 달: 월 = 그 달 한 달 값, 연 = 월 × 12. 누적: 누적 = {FIRST}부터 각 달 합(이번 달 포함), 1년 = 누적 + 이번 달 × (12 − 누적 개월 수), 시작 달부터 12개월</li>
 <li>월간 절감액: 그 달 한 달의 박스비 + 경동 정기화물 운임 감소(그때까지 반영된 개선 제안 효과 모두 포함, 승인 제안의 예상 효과 기준). 연간 추정 = 해당 월 × 12. 누적 = {FIRST}부터 각 달 월간 절감액의 합</li>
 <li>나무 환산: 연간 탄소 감축 ÷ 30년생 소나무 1그루 연 6.6 kg CO₂ (국립산림과학원 발표, 판본에 따라 값이 다름 — 최신 '주요 산림수종의 표준 탄소흡수량' 확인 필요). 참고: 30년생 소나무 숲 1ha 연 10.8톤 CO₂(2022-04 배포)</li></ul>

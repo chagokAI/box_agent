@@ -291,7 +291,7 @@ def find_sku_candidates(products: list[dict], max_fill_pct: float = 20, min_shar
                         limit: int = 5, regulated_boxes: list[str] | None = None, id_prefix: str = "S") -> dict:
     """군집과 별도로 볼 단일 품목: 충진율 max_fill_pct 미만이고 출고 비중 min_share_pct 이상인 상품을
     낭비 부피(박스 부피 − 상품 부피) × 출고량이 큰 순으로 limit 개. 군집과 같은 모양(SKU 1개짜리)으로 돌려준다.
-    regulated_boxes 를 주면 그 박스(포장 규제 대상)에 담기는 상품만 본다(충진율 목표 모드)."""
+    regulated_boxes 를 주면 그 박스(포장 규제 대상)에 담기는 상품만 본다(ESG 우선 모드)."""
     tot = sum(p["qty90d"] for p in products) or 1
     pick = [p for p in products if p["fill"] < max_fill_pct and 100 * p["qty90d"] / tot >= min_share_pct
             and (regulated_boxes is None or p["box"] in regulated_boxes)]
@@ -331,7 +331,7 @@ def simulate_boxset(products: list[dict], box_specs: list[dict], candidates: lis
     combined.monthly_saving = 선정 규격을 모두 넣었을 때의 월 절감 — 제안서의 예상 이익은 이 값 하나만 쓴다.
     combined.load = 선정 규격을 모두 넣었을 때 배정이 바뀌는 출고의 도입 전/후 월 적재량(_load).
     reg_fill_* = 포장 규제 대상(세 변 합 50cm 초과) 출고의 센터 전체 충진율.
-    fill_mode = {"min_gain": %p, "max_extra_cost": 원} 이면 충진율 목표 모드: 절감 게이트를 못 넘어도 규제 대상 충진율을
+    fill_mode = {"min_gain": %p, "max_extra_cost": 원} 이면 ESG 우선 모드: 절감 게이트를 못 넘어도 규제 대상 충진율을
     min_gain 이상 올리고 월 추가 비용(누적)이 max_extra_cost 안이면 선정(pass_by = "FILL"). 절감 통과 후보를 먼저 고른다."""
     base = _simulate(products, box_specs, margin_mm, allow_tilt, tilt_clearance_mm)
     base_reg = _reg_fill(products, base["assign"], box_specs)
@@ -391,7 +391,7 @@ def simulate_boxset(products: list[dict], box_specs: list[dict], candidates: lis
             r["selected"] = True
             chosen.append(r)
             cur = trial
-    if fill_mode:                                      # 충진율 목표 모드: 규제 대상 충진율을 가장 많이 올리는 후보부터, 추가 비용 한도 안에서
+    if fill_mode:                                      # ESG 우선 모드: 규제 대상 충진율을 가장 많이 올리는 후보부터, 추가 비용 한도 안에서
         extra = 0
         for r in sorted([r for r in res if r["pass_by"] == "FILL"], key=lambda r: -(r["reg_fill_after"] - r["reg_fill_before"])):
             if any(x["cluster"] == r["cluster"] for x in chosen):

@@ -381,7 +381,7 @@ async def find_clusters(state: AgentState):
                          max_fill_pct=cfg["sku_max_fill_pct"], min_share_pct=cfg["sku_min_share_pct"], limit=cfg["sku_limit"])
     fill = {"clusters": []}
     reg = [b["code"] for b in state["box_specs"] if sum(b["dims"]) > 500]
-    if cfg["fill_mode"] and cfg["fill_sku_limit"]:   # 충진율 목표 모드: 규제 대상 박스의 저충진 상품 전용 후보(POL-02 §7)
+    if cfg["fill_mode"] and cfg["fill_sku_limit"]:   # ESG 우선 모드: 규제 대상 박스의 저충진 상품 전용 후보(POL-02 §7)
         seen = {pid for c in sku["clusters"] for pid in c["productIds"]}
         fill = await mcp_call("find_clusters", "business", "find_sku_candidates", products=state["product_fits"],
                               max_fill_pct=cfg["fill_target_pct"], min_share_pct=0, limit=cfg["fill_sku_limit"] + len(seen),
@@ -486,7 +486,7 @@ async def _quote_custom(node: str, dims: list[int], qty90d: int) -> dict:
 
 
 def _fill_mode(cfg: dict) -> dict | None:
-    """충진율 목표 모드(POL-02 §7): 본부가 켠 센터만. 절감 대신 규제 대상 충진율 개선으로 선정, 월 추가 비용 한도 안에서"""
+    """ESG 우선 모드(ISO 18602 기준, POL-02 §7): 본부가 켠 센터만. 절감 대신 규제 대상 충진율 개선으로 선정, 월 추가 비용 한도 안에서"""
     return {"min_gain": cfg["fill_mode_min_gain"], "max_extra_cost": cfg["fill_mode_max_extra_cost"]} if cfg["fill_mode"] else None
 
 
@@ -505,7 +505,7 @@ async def simulate(state: AgentState):
                         f"월절감 {n(x['monthly_saving'])} pass={x['pass']} selected={x['selected']}")
     sel = [x["candId"] for x in r["results"] if x["selected"]]
     log("simulate", f"게이트 통과·선정: {sel or '없음 → 기존 규격만 보충'}"
-                    + (f" (충진율 목표 모드: 규제 대상 충진율 {r['combined']['reg_fill_before']}→{r['combined']['reg_fill_after']}%)"
+                    + (f" (ESG 우선 모드: 규제 대상 충진율 {r['combined']['reg_fill_before']}→{r['combined']['reg_fill_after']}%)"
                        if state["config"]["fill_mode"] and r["combined"] else ""))
     cfg, specs = state["config"], state["box_specs"]
     opts = {"margin_mm": cfg["margin_mm"], "allow_tilt": cfg["allow_tilt"], "tilt_clearance_mm": cfg["tilt_clearance_mm"]}
@@ -690,7 +690,7 @@ def _check_items(state: AgentState, sel: list, prev_amt, ly_amt) -> list[str]:
     reg = comb.get("reg_fill_after", res0.get("reg_fill_before"))
     if reg is not None and reg < cfg["fill_target_pct"]:
         checks.append(f"포장 규제 대상(세 변 합 50cm 초과) 출고 충진율 {reg}%로 목표 {cfg['fill_target_pct']:g}%에 못 미침"
-                      + ("" if cfg["fill_mode"] else " — 본부 충진율 목표 모드 적용 여부 결정 필요"))
+                      + ("" if cfg["fill_mode"] else " — 본부 ESG 우선 모드 적용 여부 결정 필요"))
     if plan.get("peakSafety"):                       # POL-03 §1 성수기 안전 재고
         checks.append(f"성수기 안전 재고 {plan['safetyDays']}일분 적용(기본 {cfg['safety_days']}일)")
     if prev_amt:                                     # POL-03 §4 전월 대비 금액 변동 사유
@@ -821,8 +821,8 @@ def _html_data(state: AgentState, values: dict, sel: list, checks: list[str], re
         saving = block["monthly_saving"]          # 예상 이익 = 시뮬레이션 절감액 하나 (근거 문장·md 표와 같은 값)
         if saving > 0:
             profit = {"monthly": saving, "note": f"연 환산 {n(saving * 12)}원 · 박스비 + 운임 절감"}
-        elif block.get("reg_fill_after") is not None:      # 충진율 목표 모드: 비용은 늘지만 규제 대상 충진율 개선
-            profit = {"monthly": None, "note": f"충진율 목표 모드 · 월 비용 +{n(-saving)}원, 규제 대상 충진율 "
+        elif block.get("reg_fill_after") is not None:      # ESG 우선 모드: 비용은 늘지만 규제 대상 충진율 개선
+            profit = {"monthly": None, "note": f"ESG 우선 모드 · 월 비용 +{n(-saving)}원, 규제 대상 충진율 "
                                                f"{block['reg_fill_before']}% → {block['reg_fill_after']}%"}
         frm ="·".join(block["load"]["fromBoxes"])
         eff = {"subtitle": f"{title} · 대상 월 {n(b['shipments'])}건 (기존 {frm})",
@@ -910,7 +910,7 @@ async def write_proposal(state: AgentState):
             reason2 += f". 그 밖에 {', '.join(cd0[x['candId']]['name'] for x in sel[1:])}도 도입"
         if any(x.get("pass_by") == "FILL" for x in sel):
             cfgx = state["config"]
-            reason2 += (f". 충진율 목표 모드(목표 {cfgx['fill_target_pct']:g}%)로 선정 — 규제 대상 충진율 "
+            reason2 += (f". ESG 우선 모드(목표 {cfgx['fill_target_pct']:g}%)로 선정 — 규제 대상 충진율 "
                         f"{comb0.get('reg_fill_before')}% → {comb0.get('reg_fill_after')}%, 월 추가 비용 한도 "
                         f"{n(cfgx['fill_mode_max_extra_cost'])}원")
         reason2 += (f". 선정 규격 전체로 월 박스비·운임 약 {n(saving)}원 절감, "
