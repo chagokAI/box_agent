@@ -175,8 +175,9 @@ class AgentState(TypedDict, total=False):
     purchase_orders: list                     # 전월·전년 동월 발주
     forecast: dict                            # 다음 달 출고 예측·정확도
     product_fits: list                        # 상품별 치수·출고량·배정박스·충진율·원인
-    unfit_products: list                      # 보유 규격 어디에도 안 들어가는 상품
+    unfit_products: list                      # 보유 규격 어디에도 안 들어가 포장 대기한 상품(서버 NO_AVAILABLE_BOX)
     tilted_products: list                     # 기울여야 들어가는 상품(검토 대상)
+    stockout_products: list                   # 맞는 박스가 품절이라 포장 대기한 상품(서버 NO_AVAILABLE_BOX)
     custom_unfit: dict | None                 # 안 들어가는 상품용 맞춤 제작 규격(유팩 참고 견적)
     custom_notes: list                        # 맞춤 견적 실패·불가 메모('확인 필요'에 적음)
     spec_limit: dict                          # 활성 규격 상한 점검(POL-02 §3): 상한 때문에 뺀 신규 후보, 규격별 사용 비중
@@ -354,13 +355,19 @@ async def analyze_fit(state: AgentState):
     log("analyze_fit", f"전체 충진율 {r['overall_fill']}% | 저충진 SKU {r['low_fill_skus']}개, "
                        f"출고 비중 {r['low_fill_qty_share']}%")
     if r["unfit"]:
-        log("analyze_fit", f"보유 규격에 안 들어가는 상품 {len(r['unfit'])}개 제외: "
+        log("analyze_fit", f"보유 규격에 안 들어가 포장 대기한 상품 {len(r['unfit'])}개 제외: "
                            f"{[u['code'] or u['productId'] for u in r['unfit']][:10]}")
+    if r["stockout"]:
+        log("analyze_fit", f"맞는 박스가 품절이라 포장 대기한 상품 {len(r['stockout'])}개: "
+                           f"{[(u['code'] or u['productId'], u['box']) for u in r['stockout']][:10]}")
+    if r["inactive"]:
+        log("analyze_fit", f"비활성 규격으로 나간 출고 {sum(u['qty90d'] for u in r['inactive'])}건 제외: "
+                           f"{sorted({u['box'] for u in r['inactive']})}")
     if r["tilted"]:
         log("analyze_fit", f"기울여야 들어가는 상품 {len(r['tilted'])}개(검토 대상): "
                            f"{[(t['code'] or t['productId'], t['box']) for t in r['tilted']][:10]}")
     return {"product_fits": r["products"], "unfit_products": r["unfit"], "tilted_products": r["tilted"],
-            "messages": ["analyze_fit"]}
+            "stockout_products": r["stockout"], "messages": ["analyze_fit"]}
 
 
 async def diagnose(state: AgentState):
@@ -557,7 +564,8 @@ async def plan_order(state: AgentState):
             new_specs.append({"code": c["code"], "dims": c["dims"], "price": c["price"],
                               "label": f"{c['name']} (신규·맞춤)" if c["type"] == "CUSTOM"
                               else f"{c['name']} {dims_s(c['dims'])} (신규)"})
-    products, cu = state["product_fits"], state.get("custom_unfit")
+    cu = state.get("custom_unfit")
+    products = state["product_fits"] + (state.get("stockout_products") or [])   # 품절로 대기한 출고도 보충되면 그 박스를 쓴다
     if cu:                               # 안 들어가던 상품도 맞춤 규격으로 소모량을 잡는다
         new_specs.append({"code": cu["code"], "dims": cu["dims"], "price": cu["price"], "label": f"{cu['name']} (신규·맞춤)"})
         products = products + state["unfit_products"]
@@ -661,11 +669,15 @@ def _check_items(state: AgentState, sel: list, prev_amt, ly_amt) -> list[str]:
     checks += state.get("custom_notes") or []
     if state.get("unfit_products") and not cu:
         u = state["unfit_products"]
-        checks.append(f"보유 규격에 안 들어가는 상품 {len(u)}개(90일 출고 {n(sum(x['qty90d'] for x in u))}건)는 계산에서 제외 — "
+        checks.append(f"보유 규격에 안 들어가는 상품 {len(u)}개(월 {n(sum(x['qty90d'] for x in u) // 3)}건)는 계산에서 제외 — "
                       f"대형 규격 필요 여부 확인")
+    if state.get("stockout_products"):
+        so = state["stockout_products"]
+        checks.append(f"맞는 박스가 품절이라 포장 대기한 출고 월 {n(sum(x['qty90d'] for x in so) // 3)}건"
+                      f"({', '.join(sorted({x['box'] for x in so}))}) — 재고 보충 시점 확인")
     if state.get("tilted_products"):
         t = state["tilted_products"]
-        checks.append(f"기울여 넣어야 들어가는 상품 {len(t)}개(90일 출고 {n(sum(x['qty90d'] for x in t))}건) — "
+        checks.append(f"기울여 넣어야 들어가는 상품 {len(t)}개(월 {n(sum(x['qty90d'] for x in t) // 3)}건) — "
                       f"현장 포장 가능 여부 검토")
     if not state["forecast"].get("accuracy_pct"):
         checks.append(f"출고 이력 {len(state['shipment_history'])}개월로 백테스트 불가 — 예측 정확도 미산출")
