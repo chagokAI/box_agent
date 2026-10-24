@@ -107,3 +107,5 @@ td,th{white-space:nowrap}table{margin-top:14px;font-size:13px}section{overflow-x
 .b2 .side{display:grid;gap:12px}.b2 .s{background:rgb(255 255 255/6%);border:1px solid rgb(255 255 255/12%);border-radius:10px;padding:12px 16px}
 .b2 .s .l{font-size:11px;margin-bottom:2px}.b2 .s b{font-size:20px;font-variant-numeric:tabular-nums}.b2 .s small{font-size:12px;opacity:.75}.b2 .s span{font-size:12px;opacity:.7;display:block;margin-top:2px}
 @media (max-width:760px){.hero .b2{grid-template-columns:1fr}.b2 .big{font-size:34px}}
+/* 카드 줄: 숫자는 한 줄·오른쪽 고정, 모자라면 이름이 줄바꿈 */
+.cc-row{gap:8px;align-items:baseline}.cc-row span{min-width:0;line-height:1.35}.cc-row b{white-space:nowrap;text-align:right;flex-shrink:0}

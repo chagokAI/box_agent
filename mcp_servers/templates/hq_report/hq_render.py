@@ -31,6 +31,17 @@ FIRST = f"{int(MONTHS[0][5:])}월"
 won = lambda v: f"{round(v):,}원"
 
 
+def kwon(v, sign=False):
+    """카드용 짧은 금액: 1억 이상 'n.n억 원', 1만 이상 'n,nnn만 원' (정확한 값은 title 로)"""
+    a, pm = abs(v), ("+" if v >= 0 else "−") if sign else ("−" if v < 0 else "")
+    body = f"{a / 1e8:,.1f}억 원" if a >= 1e8 else f"{a / 1e4:,.0f}만 원" if a >= 1e4 else f"{round(a):,}원"
+    return pm + body
+
+
+kkg = lambda v: f"{v / 1000:,.1f}톤" if abs(v) >= 1000 else f"{v:,.0f} kg"          # 카드용 탄소
+kship = lambda v: f"{v / 1e4:,.0f}만 건" if v >= 1e4 else f"{v:,}건"                    # 카드용 출고
+
+
 def eok(v):
     """억 단위 강조 표기: 261,340,848 → '약 2억 6천만 원' (천만 원 단위 반올림)"""
     if v < 1e8:                              # 1억 미만은 만 원 단위: 43,498,638 → '약 4,350만 원'
@@ -117,10 +128,10 @@ def report(mi):
                  f'<line class="kg" x1="2" x2="{W - 2}" y1="{y(50):.1f}" y2="{y(50):.1f}"/></svg>')
         return (f'<div class="cc cc--{cls}"><div class="cc-h"><b>{d["center"]}</b><span class="badge badge--{cls}">{label}</span></div>'
                 f'<div class="cc-why">{why}{" · 신규 규격 기준 하향" if d.get("low_gate") else ""}</div>'
-                f'<div class="cc-row"><span>출고</span><b>{d["ship"]:,}건</b></div>'
-                f'<div class="cc-row"><span>이번 달 절감액 <small>전월 대비</small></span><b>월 {sgn(d["inc_s"])}</b></div>'
-                f'<div class="cc-row"><span>누적 절감액 <small>{span}</small></span><b>{won(cum_s)}</b></div>'
-                f'<div class="cc-row"><span>누적 탄소 감축 <small>{span}</small></span><b>{cum_c:,.0f} kg</b></div>'
+                f'<div class="cc-row"><span>출고</span><b title="{d["ship"]:,}건">{kship(d["ship"])}</b></div>'
+                f'<div class="cc-row"><span>이번 달 절감액 <small>전월 대비</small></span><b title="{sgn(d["inc_s"])}">{kwon(d["inc_s"], True)}</b></div>'
+                f'<div class="cc-row"><span>누적 절감액 <small>{span}</small></span><b title="{won(cum_s)}">{kwon(cum_s)}</b></div>'
+                f'<div class="cc-row"><span>누적 탄소 감축 <small>{span}</small></span><b title="{cum_c:,.0f} kg">{kkg(cum_c)}</b></div>'
                 f'<div class="cc-row"><span>센터 충진율</span><b>{d["fill"]}%</b></div>'
                 f'<div class="cc-row"><span>전월 대비 충진율</span><b class="{"up" if dm >= 0 else "dn"}">{dm:+.1f}%p</b></div>'
                 f'<div class="cc-f">{chart}</div></div>')
