@@ -57,6 +57,19 @@ def _months_back(month: str, n: int) -> list[str]:
     return out[::-1]
 
 
+def _covered_days(month: str, data_as_of: str | None) -> float:
+    """그 달에 데이터가 있는 일수. 진행 중인 달(마지막 출고 시각이 그 달 안)은 1일 0시부터 마지막 출고까지(소수 일),
+    마감된 달은 달력 일수. 월 값(일평균 × 30)·연간 추정(× 365)을 이 일수로 나눠야 진행 중인 달이 낮게 나오지 않는다"""
+    dim = calendar.monthrange(int(month[:4]), int(month[5:]))[1]
+    if not data_as_of:
+        return dim
+    end = datetime.fromisoformat(data_as_of)
+    start = datetime(int(month[:4]), int(month[5:]), 1, tzinfo=end.tzinfo)
+    if end.strftime("%Y-%m") != month:
+        return dim
+    return round(min(dim, max((end - start).total_seconds() / 86400, 1)), 2)
+
+
 def _month_range(month: str) -> tuple[str, str]:
     y, m = map(int, month.split("-"))
     return f"{month}-01", f"{month}-{calendar.monthrange(y, m)[1]:02d}"
@@ -91,7 +104,9 @@ async def collect(state: HQState):
             fits = await A.mcp_call("collect", "business", "list_product_fits", warehouse_id=wid, from_date=f, to_date=t)
             met = await A.mcp_call("collect", "business", "center_month_metrics", rows=fits["items"], box_specs=specs)
             if met["ship"]:
-                rows[m].append({"center": c["name"], "warehouseId": wid, **met, "applied": new_by_month.get(m, 0)})
+                as_of = (fits.get("meta") or {}).get("dataAsOf")
+                rows[m].append({"center": c["name"], "warehouseId": wid, **met, "applied": new_by_month.get(m, 0),
+                                "days": _covered_days(m, as_of), "dataAsOf": as_of})
     rows = {m: r for m, r in rows.items() if r}
     while rows and not any(d["saving"] for d in next(iter(rows.values()))):   # 효율화 전(절감 0) 달은 앞에서 뺀다
         rows.pop(next(iter(rows)))
@@ -186,10 +201,11 @@ def _krw(v: float) -> str:
 def _summary_draft(state: HQState) -> tuple[dict, list[str]]:
     """본부 총평 facts·규칙 초안. 월 값은 리포트와 같은 30일 기준"""
     m = state["months"][-1]
-    rows, dim = state["rows"][m], calendar.monthrange(int(m[:4]), int(m[5:]))[1]
+    rows = state["rows"][m]
     short = lambda n: n.replace(" 센터", "")
     names = lambda xs: ", ".join(xs) if len(xs) <= 3 else f"{xs[0]} 외 {len(xs) - 1}곳"
-    saving, co2 = sum(d["saving"] for d in rows) / dim * 30, sum(d["co2_cut"] for d in rows) / dim * 30
+    saving = sum(d["saving"] / d["days"] for d in rows) * 30          # 센터마다 데이터 일수로 일평균(진행 중인 달 포함)
+    co2 = sum(d["co2_cut"] / d["days"] for d in rows) * 30
     by = {s: [short(d["center"]) for d in rows if d["status"] == s] for s in ("양호", "주의", "개선 필요")}
     facts = {"month": m, "centers": len(rows), "monthlySaving": _krw(saving), "co2Ton": f"{co2 / 1000:,.0f}톤",
              "goodCount": len(by["양호"]), "statusCenters": {k: names(v) for k, v in by.items() if v},

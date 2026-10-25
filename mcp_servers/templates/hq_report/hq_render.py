@@ -10,6 +10,7 @@
 요약: 월 절감액 = 도입 전 대비 월 수준(전월까지 개선 + 이번 달 개선), 연간 추정 = 일평균 × 365, 괄호 = 이번 달(전월 대비). 월 값은 한 달 = 30일 기준.
 금액은 요약에서만 천 원 단위 반올림 표시(r3), 데이터는 원 단위."""
 import calendar, json, math, sys
+from datetime import datetime
 from pathlib import Path
 
 OUT, NOTE, SUMMARY, RECO = Path("."), "", None, None         # render() 가 정한다(출력 폴더, 상단 표시 문구, 마지막 달 본부 총평)
@@ -21,18 +22,27 @@ DAYS30, DAYS365 = 30, 365
 
 
 def _load(data_in: dict) -> None:
-    """월 값은 한 달 = 30일로 맞춘다(달마다 일수가 달라 생기는 증감 제거). 누적은 실제 합계를 쓴다"""
-    global data, MONTHS, FIRST
+    """월 값은 한 달 = 30일로 맞춘다(달마다 일수가 달라 생기는 증감 제거). 누적은 실제 합계를 쓴다.
+    행에 days(데이터가 있는 일수)가 있으면 그것으로 나눈다 — 진행 중인 달은 지난 일수 기준"""
+    global data, MONTHS, FIRST, PARTIAL
     data = json.loads(json.dumps(data_in))
     MONTHS = list(data)
     for _m, _rows in data.items():
-        _dim = calendar.monthrange(int(_m[:4]), int(_m[5:]))[1]
+        _full = calendar.monthrange(int(_m[:4]), int(_m[5:]))[1]
         for _d in _rows:
+            _dim = _d.get("days") or _full
             _d.setdefault("saving_act", _d["saving"]); _d.setdefault("co2_act", _d["co2_cut"])
             _d["saving"] = round(_d["saving_act"] / _dim * DAYS30)
             _d["co2_cut"] = round(_d["co2_act"] / _dim * DAYS30, 1)
             _d["ship30"] = _d["ship"] / _dim * DAYS30
     FIRST = f"{int(MONTHS[0][5:])}월" if MONTHS else ""
+    # 진행 중인 달: {월: 마지막 데이터 시각}. 요약 머리에 '○일 ○시까지 데이터 기준'으로 표시
+    PARTIAL = {}
+    for _m, _rows in data.items():
+        _full = calendar.monthrange(int(_m[:4]), int(_m[5:]))[1]
+        _ends = [_d["dataAsOf"] for _d in _rows if _d.get("days") and _d["days"] < _full and _d.get("dataAsOf")]
+        if _ends:
+            PARTIAL[_m] = max(_ends)
 
 
 won = lambda v: f"{round(v):,}원"
@@ -153,7 +163,7 @@ def report(mi):
     html = f"""<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{m[:4]}년 {int(m[5:])}월 본부 효율화 리포트</title><style>{CSS}</style></head><body><div class="page">
 <div class="top"><div><span class="tag">AI 생성</span>본부 통합 효율화 리포트 · 센터 {len(rows)}곳</div><div>대상 {m}{' · <b>' + NOTE + '</b>' if NOTE else ''}</div></div>
-<div class="hero"><div class="k">요약 · {m[:4]}년 {int(m[5:])}월</div>
+<div class="hero"><div class="k">요약 · {m[:4]}년 {int(m[5:])}월{partial_note(m)}</div>
 <div class="b2">
 <div><div class="l">월 절감액 · 도입 이후 개선 합계</div><div class="big">{won(r3(tot('saving')))}<small>(이번 달 {"변화 없음" if flat(inc('inc_s'), tot('saving')) else sgn(r3(inc('inc_s')))})</small></div><div class="yr">연간 추정 <b>{eok(tot('saving') / DAYS30 * DAYS365)}</b></div></div>
 <div class="side"><div class="s"><div class="l">월 탄소 감축 · 운송 + 포장재</div><b>{tot('co2_cut'):,.0f} kg</b> <small>(이번 달 {"변화 없음" if flat(inc('inc_c'), tot('co2_cut')) else f"{inc('inc_c'):+,.0f} kg"})</small><span>연간 {tot('co2_cut') / DAYS30 * DAYS365 / 1000:,.1f}톤 · 소나무 약 {tot('co2_cut') / DAYS30 * DAYS365 / PINE_KG:,.0f}그루 1년 흡수량</span></div>
@@ -178,7 +188,7 @@ def report(mi):
 <li>포장재 탄소: 골판지 중량(전개 면적 × 550 g/m²) × 491 kg CO₂e/t (FEFCO 2021, STD-02)</li>
 <li>충진율: 포장 규제 대상 출고(박스 세 변 합 50cm 초과)만 계산 — 50cm 이하는 포장공간비율 기준 미적용(포장 규칙 별표 1 비고 11)이라 제외. 상품 부피 ÷ 박스 내부 부피, 출고량 가중</li>
 <li>규제 준수율: 세 변 합 50cm 초과 출고 중 포장공간비율 50% 이하(부피 기준 근사) 비율 (포장 규칙 별표 1 비고 11, STD-03)</li>
-<li>요약 금액은 천 원 단위로 반올림해 표시(계산은 원 단위). 월 절감액 = 전월까지 도입한 개선의 월 절감 + 이번 달 새 개선의 월 절감(도입 전 대비), 월 값은 한 달 = 30일(그 달 일평균 × 30)로 맞춰 일수 차이로 생기는 증감을 없앤다. 연간 추정 = 일평균 × 365. 월 탄소 감축도 같은 방식. 이번 달 값(절감·탄소): 그달 월 효과의 ±1% 미만이면 '변화 없음'. 출고량 변동을 뺀 효율 변화 = (이번 달 출고 1건당 절감 − 전월 출고 1건당 절감) × 이번 달 출고(30일 기준), 첫 달은 도입 전 대비. 누적은 실제 합계. 누적 = 시작 달부터 각 달의 도입 전 대비 월 효과 합</li>
+<li>요약 금액은 천 원 단위로 반올림해 표시(계산은 원 단위). 월 절감액 = 전월까지 도입한 개선의 월 절감 + 이번 달 새 개선의 월 절감(도입 전 대비), 월 값은 한 달 = 30일(그 달 일평균 × 30)로 맞춰 일수 차이로 생기는 증감을 없앤다. 진행 중인 달은 마지막 데이터 시각까지 지난 일수로 일평균을 낸다. 연간 추정 = 일평균 × 365. 월 탄소 감축도 같은 방식. 이번 달 값(절감·탄소): 그달 월 효과의 ±1% 미만이면 '변화 없음'. 출고량 변동을 뺀 효율 변화 = (이번 달 출고 1건당 절감 − 전월 출고 1건당 절감) × 이번 달 출고(30일 기준), 첫 달은 도입 전 대비. 누적은 실제 합계. 누적 = 시작 달부터 각 달의 도입 전 대비 월 효과 합</li>
 <li>절감 기준 하향: 전월에 새 규격이 없던 센터는 그달 신규 규격 기준을 월 절감 30만 → 3만 원, 대상 충진율 개선 +10 → +3%p, 출고 비중 3 → 1%로 낮춰 제안(본부 센터별 조정)</li>
 <li>개선 반영: 그달 승인되어 반영된 개선 제안 건수(신규 규격 도입 등)</li>
 <li>판정 (목표: 포장 규제 대상 출고 충진율 50%, POL-02 §7) — 양호: 50% 이상 / 주의: 미달이지만 전월 대비 +2%p 이상 개선 / 효율 개선 필요: 미달이면서 +2%p 미만(정체, 반려 포함)</li>
@@ -197,6 +207,14 @@ def report(mi):
 EMBED_JS = ("if(window.self!==window.top){document.documentElement.classList.add('embed');"
             "const send=()=>parent.postMessage({type:'chagok-report-height',height:Math.ceil(document.body.getBoundingClientRect().height)},'*');"
             "new ResizeObserver(send).observe(document.body);addEventListener('load',send);document.addEventListener('toggle',send,true)}")
+
+
+def partial_note(m):
+    """진행 중인 달 표시: 월 값·연간 추정은 지난 일수의 일평균으로 계산했다는 것"""
+    if m not in PARTIAL:
+        return ""
+    end = datetime.fromisoformat(PARTIAL[m])
+    return f" <small class=\"partial\">진행 중 · {end.day}일 {end:%H:%M}까지 데이터 기준</small>"
 
 
 def reco_table():

@@ -114,3 +114,4 @@ td,th{white-space:nowrap}table{margin-top:14px;font-size:13px}section{overflow-x
 .reco{width:100%;border-collapse:collapse;font-size:13px}.reco th,.reco td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
 .reco td.muted{color:var(--muted);white-space:normal}.tw{overflow-x:auto}
 .embed body{padding:0;background:var(--surface)}.embed .page{max-width:none;border:none;border-radius:0;box-shadow:none}
+.hero .k .partial{margin-left:8px;font-size:11px;letter-spacing:0;color:var(--hero-text);opacity:.7;font-weight:400}
