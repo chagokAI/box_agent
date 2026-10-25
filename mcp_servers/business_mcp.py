@@ -26,13 +26,15 @@ from mcp.server.fastmcp import FastMCP  # noqa: E402
 import catalog_server  # noqa: E402
 import custom_quote_server  # noqa: E402
 import forecast_server  # noqa: E402
+import hq_server  # noqa: E402
 import packing_server  # noqa: E402
 import proposal_server  # noqa: E402
 import rules_server  # noqa: E402
 import wms_server  # noqa: E402
 from mcp_common import serve  # noqa: E402
 
-MODULES = [rules_server, wms_server, catalog_server, custom_quote_server, packing_server, forecast_server, proposal_server]
+MODULES = [rules_server, wms_server, catalog_server, custom_quote_server, packing_server, forecast_server, proposal_server,
+           hq_server]
 
 
 def compose(name: str, modules: list) -> FastMCP:

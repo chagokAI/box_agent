@@ -109,3 +109,7 @@ td,th{white-space:nowrap}table{margin-top:14px;font-size:13px}section{overflow-x
 @media (max-width:760px){.hero .b2{grid-template-columns:1fr}.b2 .big{font-size:34px}}
 /* 카드 줄: 숫자는 한 줄·오른쪽 고정, 모자라면 이름이 줄바꿈 */
 .cc-row{gap:8px;align-items:baseline}.cc-row span{min-width:0;line-height:1.35}.cc-row b{white-space:nowrap;text-align:right;flex-shrink:0}
+.hqsum ul{margin:0;padding-left:18px;display:grid;gap:6px}.hqsum li{line-height:1.6;color:var(--text)}
+.hqsum h3{margin:18px 0 8px;font-size:15px}.hqsum h3 small{font-weight:400;color:var(--muted);font-size:12px;margin-left:6px}
+.reco{width:100%;border-collapse:collapse;font-size:13px}.reco th,.reco td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+.reco td.muted{color:var(--muted);white-space:normal}.tw{overflow-x:auto}

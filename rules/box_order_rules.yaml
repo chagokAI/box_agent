@@ -63,6 +63,20 @@ rules:
   - {key: fill_sku_limit, value: 5, type: int, unit: 개, range: [0, 20], scope: center, feedback: false,
      source: POL-02 §7, label: ESG 우선 모드 상품 전용 후보 최대 개수(규제 대상 저충진 상품)}
 
+  - {key: hq_stall_gain, value: 2, type: float, unit: "%p", range: [0.5, 20], scope: global, feedback: false,
+     source: POL-02 §7, label: 본부 판정 — 목표 미달이면서 전월 대비 이 폭 미만 개선이면 효율 개선 필요}
+  - {key: hq_months, value: 6, type: int, unit: 개월, range: [1, 24], scope: global, feedback: false,
+     source: POL-02 §7, label: 본부 리포트에 넣는 최근 개월 수}
+  - {key: hq_cap_step, value: 5, type: int, unit: 종, range: [1, 15], scope: global, feedback: false,
+     source: POL-02 §7, label: ESG 우선 모드에도 정체인 센터의 규격 상한 상향 폭(본부장 승인)}
+  # 본부 추천 — 본부장이 센터별로 조정하는 3개(hq_tune: 월 절감액·충진율 개선 폭·목형비 회수 기간)를 판정 단계만큼 푼다
+  - {key: hq_reco_saving_step, value: 50000, type: int, unit: 원, range: [10000, 300000], scope: global, feedback: false,
+     source: POL-02 §7, label: 본부 추천 — 주의 1단계·효율 개선 필요 2단계만큼 월 절감액 기준을 낮추는 폭}
+  - {key: hq_reco_fill_step, value: 0.5, type: float, unit: "%p", range: [0.1, 5], scope: global, feedback: false,
+     source: POL-02 §7, label: 본부 추천 — 단계당 충진율 개선 폭 기준을 낮추는 폭}
+  - {key: hq_reco_payback_step, value: 1, type: float, unit: 개월, range: [0.5, 6], scope: global, feedback: false,
+     source: POL-02 §7, label: 본부 추천 — 단계당 목형비 회수 기간을 늘리는 폭}
+
   # ── 규격 수 상한 (POL-02 §3) ────────────────────────────────────────────
   - {key: spec_max_active, value: 15, type: int, unit: 종, range: [3, 30], scope: center, feedback: false,
      source: POL-02 §3, label: 센터당 활성 규격 상한}

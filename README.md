@@ -133,11 +133,18 @@ python tests/knowledge_eval.py       # rag 검색 적중 (top-3, --k 1)
 - 나가는 곳: `APPROVAL_REQUIRED.proposalHtml`, 저장 `summary.bodyHtml`, `./proposals/<jobId>.html`. ⑨ 평가는 md 로만 한다
 - 외부 라이브러리 없이 HTML 한 파일(인라인 SVG 차트·다크 모드). 차트 색은 색각 검사 통과 값 — 바꾸면 다시 검사
 
-## 본부 통합 효율화 리포트 양식 (기획 단계)
-- 양식 `mcp_servers/templates/hq_report/` (2026-10-23 확정): `hq_render.py <out dir> <hq_data.json>` → 월별 `hq_report_YYYY-MM.html`.
-  입력 스키마는 `hq_render.py` docstring. 리포트 에이전트(입력 집계)는 아직 없다
-- 요약: 월 절감액(도입 전 대비 월 수준, 이번 달 = 전월 대비) · 연간 추정(× 12) · 월 탄소 감축 · 효율 개선 필요 센터
-- 판정(재실행 후 최종 vs 전월): 양호 = 포장 규제 대상 충진율 50% 이상 / 주의 = 미달·+2%p 이상 / 효율 개선 필요 = 미달·+2%p 미만
+## 본부 통합 효율화 리포트 에이전트 (`hq_report_agent.py`)
+- 흐름: load_context → collect → judge → plan_actions → write_report → human_review(승인 대기) → apply_actions
+  - collect: 센터마다 최근 `hq_months`(6)개월의 실제 배정(`list_product_fits`)·규격·지난 제안 → `center_month_metrics`(hq-mcp 도구).
+    도입 전 = 승인된 AI 제안으로 등록한 규격(description `catalog:`·`custom:`)을 뺀 박스 세트. 효율화 전(절감 0) 달은 뺀다
+  - judge: 규제 대상 충진율 목표(`fill_target_pct`, 50%) 이상 양호 / 미달·전월 대비 +`hq_stall_gain`(2%p) 이상 주의 / 미달·그 미만 효율 개선 필요
+  - plan_actions: 효율 개선 필요 센터 → ESG 우선 모드(`fill_mode`) 켜기, 이미 켜져 있으면 규격 상한 +`hq_cap_step`(5)종
+  - human_review: 조치는 센터 판단 규칙을 바꾸는 일이라 본부장 승인 앞에서 멈춘다. 승인하면 `set_center_overrides`(rules-mcp, 변경 도구)로
+    센터 덮어쓰기에 저장 → 다음 월말 박스 주문 제안부터 적용. 본부 에이전트가 박스 제안 에이전트를 직접 돌리지는 않는다
+- 실행: CLI `python hq_report_agent.py --month 2026-09`, 서버 `POST /internal/agent/hq-reports {month, note}` → 승인은 기존 `/tasks/{taskId}/approval`
+- 출력: `HQ_REPORT_DIR`(기본 `proposals/hq/<월>/hq_report_YYYY-MM.html`), 센터 덮어쓰기는 `POLICY_RULE_OVERRIDES`(compose: 볼륨 `/app/proposals/rule_overrides`)
+- 양식 `mcp_servers/templates/hq_report/` (2026-10-23 확정, `hq_render.render`): 요약(월 절감액 = 도입 전 대비 월 수준, 이번 달 = 출고당 효율 변화,
+  ±1% 미만 '변화 없음', 연간 = 일평균 × 365) · 센터 카드 · 월별 추이 · 효율 개선 필요 센터 조치
 
 ## 문장 작성(⑧)과 검토(⑨)
 - `sample_proposal_2026-11.md` = 양식대로 채운 예시 제안서. `get_template`의 `example_md`로 LLM에 넘겨 문체·구성만 참고하게 한다

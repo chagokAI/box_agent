@@ -18,7 +18,7 @@ import policy_rules  # noqa: E402
 
 rules = policy_rules.load_rules()["rules"]                       # 5. 범위 검증 포함
 docs = {f.name: f.read_text(encoding="utf-8") for f in sorted((ROOT / "knowledge" / "policies").glob("*.md"))}
-code = (ROOT / "box_spec_agent.py").read_text(encoding="utf-8")
+code = "".join((ROOT / f).read_text(encoding="utf-8") for f in ("box_spec_agent.py", "hq_report_agent.py"))
 prompt = (ROOT / "prompts" / "feedback_interpreter.md").read_text(encoding="utf-8")
 errors = []
 

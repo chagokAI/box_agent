@@ -8,6 +8,7 @@
   GET  /internal/agent/tasks/{taskId}            상태·결과 {status, result, error, traceId, harness}
   GET  /internal/agent/tasks/{taskId}/events     진행 이벤트 SSE (Last-Event-ID 로 이어 받기)
   POST /internal/agent/tasks/{taskId}/approval   승인·반려 {decision: APPROVED|REJECTED, comment} → 202, 같은 thread_id 로 재개
+  POST /internal/agent/hq-reports                본부 통합 효율화 리포트 {month, note} → 202 {taskId} (조치가 있으면 승인 대기)
   GET  /internal/agent/health
 
 이벤트: TOOL_START · TOOL_END · TOKEN(제안서 본문) · APPROVAL_REQUIRED(save_proposal 앞에서 멈춤) · DONE · FAILED
@@ -34,6 +35,7 @@ from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 import box_spec_agent as agent
+import hq_report_agent as hq
 import harness
 
 TERMINAL = {"DONE", "FAILED"}
@@ -46,14 +48,20 @@ class TaskCreate(BaseModel):
     taskId: str | None = Field(None, description="Spring 작업 id 를 그대로 쓰면 같은 id 로 추적된다")
 
 
+class HQTaskCreate(BaseModel):
+    month: str | None = Field(None, pattern=r"^\d{4}-\d{2}$", description="리포트 대상 월. 기본: 지난달")
+    note: str = Field("", description="리포트 상단 표시 문구")
+    taskId: str | None = None
+
+
 class Approval(BaseModel):
     decision: Literal["APPROVED", "REJECTED"]
     comment: str = ""
 
 
 class Task:
-    def __init__(self, task_id: str, job: dict):
-        self.id, self.job = task_id, job
+    def __init__(self, task_id: str, job: dict, kind: str = "box"):
+        self.id, self.job, self.kind = task_id, job, kind        # kind: box(박스 주문 제안) | hq(본부 리포트)
         self.status, self.result, self.error = "RUNNING", None, None
         self.events: list[dict] = []
         self.changed = asyncio.Condition()
@@ -94,6 +102,7 @@ async def lifespan(_: FastAPI):
     async with agent.open_checkpointer() as saver, agent.MCPHub(agent.MCP_SERVERS) as hub:
         agent.HUB = hub
         STATE["graph"] = agent.build_graph(saver)
+        STATE["hq_graph"] = hq.build_graph(saver)
         yield
 
 
@@ -115,6 +124,15 @@ async def _run(task: Task, payload) -> None:
             harness.resume_trace(task.trace)
         task.status = "RUNNING"
         try:
+            if task.kind == "hq":
+                out = await hq.run_until_pause(STATE["hq_graph"], payload, hq.run_config(task.id, task.job))
+                if "__interrupt__" not in out:
+                    task.result = {"month": task.job["month"], "reportPaths": out["report"]["paths"],
+                                   "actions": out.get("actions") or [],
+                                   "recommendations": out.get("recommendations") or [], "approval": out.get("approval"),
+                                   "applied": out.get("applied") or []}
+                    harness.emit("DONE", **task.result, harness=harness.summary())
+                return
             out = await agent.run_until_pause(STATE["graph"], payload, agent.run_config(task.id, task.job))
             if "__interrupt__" not in out:
                 task.result = {"proposalId": task.job["proposalId"], "targetMonth": task.job["targetMonth"],
@@ -158,13 +176,30 @@ async def create_task(body: TaskCreate):
 
 
 async def _restore(task_id: str) -> Task | None:
-    """프로세스 재시작 뒤: checkpointer 에 승인 대기 상태가 남아 있으면 작업을 되살린다"""
-    snap = await STATE["graph"].aget_state({"configurable": {"thread_id": task_id}})
-    if not snap or not snap.values or "human_review" not in (snap.next or ()):
+    """프로세스 재시작 뒤: checkpointer 에 승인 대기 상태가 남아 있으면 작업을 되살린다(박스 제안·본부 리포트)"""
+    for kind, key in (("hq", "hq_graph"), ("box", "graph")) if task_id.startswith("hq-") else (("box", "graph"),):
+        snap = await STATE[key].aget_state({"configurable": {"thread_id": task_id}})
+        if snap and snap.values and "human_review" in (snap.next or ()):
+            break
+    else:
         return None
-    task = TASKS[task_id] = Task(task_id, snap.values["job"])
+    task = TASKS[task_id] = Task(task_id, snap.values["job"], kind)
     task.status = "WAITING_APPROVAL"
     return task
+
+
+@app.post("/internal/agent/hq-reports", status_code=202, dependencies=[Depends(require_token)])
+async def create_hq_report(body: HQTaskCreate):
+    """본부 통합 효율화 리포트 작업. 조치(센터 규칙 변경)가 있으면 승인 대기 → 같은 approval API 로 재개"""
+    last = (datetime.now(agent.KST).date().replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+    job = hq.make_job(body.month or last, body.note)
+    task_id = body.taskId or job["jobId"]
+    if task_id in TASKS:
+        raise HTTPException(409, f"이미 있는 taskId: {task_id}")
+    task = TASKS[task_id] = Task(task_id, job, "hq")
+    task.runner = asyncio.create_task(_run(task, {"job": job, "messages": []}))
+    await asyncio.sleep(0)
+    return {"taskId": task_id, "traceId": task.trace and task.trace["traceId"], "job": job}
 
 
 @app.get("/internal/agent/tasks/{task_id}", dependencies=[Depends(require_token)])
