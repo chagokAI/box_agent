@@ -1355,6 +1355,8 @@ async def save_result(state: AgentState):
         "harness": harness.summary(),
         "bodyMarkdown": state["proposal_md"],
         "bodyHtml": state.get("proposal_html"),
+        # HTML 을 그린 입력(render_proposal_html). 양식만 바뀌면 이걸로 다시 그린다 — 승인한 숫자는 그대로
+        "htmlData": state.get("proposal_html_data"),
     }
     r = await mcp_call("save_result", "business", "save_proposal", payload=payload)
     d = r["db"]

@@ -58,10 +58,12 @@ class TaskCreate(BaseModel):
 
 class GuideUpdate(BaseModel):
     changes: dict = Field(..., description="{규칙 키: 값}. null 이면 센터 조정을 지우고 기본값으로")
+    actor: str | None = Field(None, max_length=100, description="바꾼 사람(변경 이력)")
 
 
 class PolicyUpdate(BaseModel):
     markdown: str = Field(..., min_length=10, max_length=50000)
+    actor: str | None = Field(None, max_length=100, description="고친 사람(저장 이력)")
 
 
 class HQTaskCreate(BaseModel):
@@ -226,12 +228,8 @@ async def create_hq_report(body: HQTaskCreate):
 
 @app.get("/internal/agent/hq-reports", dependencies=[Depends(require_token)])
 async def list_hq_reports():
-    """본부 리포트 에이전트가 만든 월별 리포트(HQ_REPORT_DIR/<실행 월>/hq_report_YYYY-MM.html). 같은 월은 가장 최근 실행본"""
-    found: dict = {}
-    for f in sorted(hq.OUT_DIR.glob("*/hq_report_*.html"), key=lambda f: f.stat().st_mtime):
-        found[f.stem.removeprefix("hq_report_")] = f
-    return {"items": [{"month": m, "generatedAt": datetime.fromtimestamp(f.stat().st_mtime).isoformat(timespec="seconds")}
-                      for m, f in sorted(found.items(), reverse=True)]}
+    """저장한 월별 본부 리포트(DB box_agent.hq_report, 없으면 파일)"""
+    return await agent.mcp_call("api", "business", "list_hq_reports")
 
 
 @app.get("/internal/agent/hq-reports/readiness", dependencies=[Depends(require_token)])
@@ -263,7 +261,8 @@ async def get_policy(doc_id: str):
 async def update_policy(doc_id: str, body: PolicyUpdate):
     """규정 문서(전 센터 공통) 수정. 형식·{규칙 키} 검증은 rag 의 update_policy_document"""
     try:
-        r = await agent.mcp_call("api", "rag", "update_policy_document", doc_id=doc_id, markdown=body.markdown)
+        r = await agent.mcp_call("api", "rag", "update_policy_document", doc_id=doc_id, markdown=body.markdown,
+                                 actor=body.actor)
     except Exception as e:
         raise HTTPException(400, str(e).rsplit("update_policy_document: ", 1)[-1]) from e
     return {**r, **await agent.mcp_call("api", "rag", "get_policy_template", doc_id=doc_id)}
@@ -271,10 +270,11 @@ async def update_policy(doc_id: str, body: PolicyUpdate):
 
 @app.get("/internal/agent/hq-reports/{month}", dependencies=[Depends(require_token)])
 async def get_hq_report(month: str):
-    files = sorted(hq.OUT_DIR.glob(f"*/hq_report_{month}.html"), key=lambda f: f.stat().st_mtime)
-    if not files:
-        raise HTTPException(404, f"{month} 본부 리포트가 없음")
-    return {"month": month, "html": files[-1].read_text(encoding="utf-8")}
+    """그 월의 본부 리포트 {month, html, data, summary, recommendations}"""
+    try:
+        return await agent.mcp_call("api", "business", "get_hq_report", month=month)
+    except Exception as e:
+        raise HTTPException(404, f"{month} 본부 리포트가 없음") from e
 
 
 @app.get("/internal/agent/centers", dependencies=[Depends(require_token)])
@@ -289,8 +289,10 @@ async def _guide(warehouse_id: str) -> dict:
     docs = [{"docId": d["docId"], "title": d["title"],
              "markdown": await agent.HUB.read_resource("rag", f"policy://{d['docId']}/center/{warehouse_id}")}
             for d in idx["items"]]
+    hist = (await agent.mcp_call("api", "business", "center_rule_history", warehouse_id=warehouse_id, limit=30))["items"]
     return {"warehouseId": warehouse_id, "version": r["version"], "updatedAt": r["updatedAt"],
-            "rules": [x for x in r["rows"] if x["scope"] == "center"], "rejected": r["rejected"], "documents": docs}
+            "rules": [x for x in r["rows"] if x["scope"] == "center"], "rejected": r["rejected"], "documents": docs,
+            "history": hist}
 
 
 @app.get("/internal/agent/centers/{warehouse_id}/guide", dependencies=[Depends(require_token)])
@@ -302,7 +304,8 @@ async def get_guide(warehouse_id: str):
 async def update_guide(warehouse_id: str, body: GuideUpdate):
     """센터 규칙 조정 저장(형·범위·조정 가능 여부는 규칙 파일로 검증). 다음 박스 주문 제안부터 적용된다"""
     try:
-        await agent.mcp_call("api", "business", "set_center_overrides", warehouse_id=warehouse_id, changes=body.changes)
+        await agent.mcp_call("api", "business", "set_center_overrides", warehouse_id=warehouse_id, changes=body.changes,
+                             actor=body.actor, reason="지침서 화면에서 조정")
     except Exception as e:                  # 규칙 파일 검증 실패: 'MCP 도구 실패: … set_center_overrides: <이유>' 에서 이유만
         raise HTTPException(400, str(e).rsplit("set_center_overrides: ", 1)[-1]) from e
     return await _guide(warehouse_id)

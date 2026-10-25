@@ -253,7 +253,7 @@ async def write_report(state: HQState):
     summary = await _summary(state)
     r = await A.mcp_call("write_report", "business", "render_hq_report", data=state["rows"], out_dir=str(out),
                          note=state["job"].get("note", ""), summary=summary,
-                         recommendations=state.get("recommendations") or [])
+                         recommendations=state.get("recommendations") or [], job_id=state["job"]["jobId"])
     A.log("write_report", f"리포트 {len(r['paths'])}개 → {out} | 총평 {summary}")
     return {"report": {"dir": str(out), "paths": r["paths"], "summary": summary,
                        "recommendations": state.get("recommendations") or []}, "messages": ["write_report"]}
@@ -274,8 +274,9 @@ async def apply_actions(state: HQState):
     applied = []
     if state["approval"]["status"] == "APPROVED":
         for a in state["actions"]:
-            r = await A.mcp_call("apply_actions", "business", "set_center_overrides",
-                                 warehouse_id=a["warehouseId"], changes=a["changes"])
+            r = await A.mcp_call("apply_actions", "business", "set_center_overrides", warehouse_id=a["warehouseId"],
+                                 changes=a["changes"], actor="본부장 승인(본부 리포트)",
+                                 reason=f"{state['job']['month']} 리포트 조치: {a['reason']}")
             applied.append({"center": a["center"], "overrides": r["overrides"]})
     A.log("apply_actions", f"{state['approval']['status']}: 반영 {[x['center'] for x in applied] or '없음'}")
     return {"applied": applied, "messages": ["apply_actions"]}

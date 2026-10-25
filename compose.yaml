@@ -34,6 +34,7 @@ services:
       MCP_HOST: 0.0.0.0
       MCP_PORT: "9101"
       MCP_ALLOWED_HOSTS: business-mcp:*
+      <<: *db-env                                    # 센터 규칙 조정·변경 이력, 본부 리포트(box_agent 스키마)
       BUSINESS_API_URL: ${AGENT_BUSINESS_API_URL:-http://backend:8080}   # 로컬 CLI 용 BUSINESS_API_URL 과 분리
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?INTERNAL_API_TOKEN을 .env에 설정하세요 (backend 와 같은 값)}
       SHIPMENT_EVENT_STATUSES: ${SHIPMENT_EVENT_STATUSES:-}

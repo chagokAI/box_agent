@@ -32,7 +32,8 @@ import policy_rules
 mcp = FastMCP("rag", log_level="WARNING")
 HERE = Path(__file__).resolve().parent
 KDIR = Path(os.getenv("KNOWLEDGE_DIR", HERE.parent / "knowledge"))
-# 본부장이 화면에서 고친 규정 문서(전 센터 공통). 같은 파일 이름이 있으면 기본 문서 대신 쓴다(이미지 /app 은 쓰기 불가 → 볼륨)
+# 본부장이 화면에서 고친 규정 문서(전 센터 공통): DB 가 있으면 box_agent.policy_doc(+ policy_doc_history),
+# 없으면(로컬 CLI·테스트) 이 폴더의 같은 파일 이름. 고친 문서가 있으면 기본 문서(knowledge/policies) 대신 쓴다
 DOC_OVERRIDE_DIR = Path(os.getenv("POLICY_DOC_OVERRIDES", HERE.parent / "knowledge" / "policy_overrides"))
 NS = uuid.UUID("2f1c7a52-0d7e-5b6a-9a1e-6b1f3c0a9e11")
 LOCAL_DIM = 1024
@@ -91,10 +92,10 @@ def _cos(a, b):
 def load_policies(values: dict | None = None) -> list[dict]:
     """규정 md → 조항('## ') 단위 청크. 제목 줄의 (POL-xx) 가 문서 id. values = 채울 규칙값(없으면 전사 기본값)"""
     out = []
-    for f in _policy_files().values():
-        text = policy_rules.render(f.read_text(encoding="utf-8"), values)   # {규칙 키} → 규칙값 (문서 숫자 = 판단 숫자)
+    for d in _policy_docs().values():
+        text = policy_rules.render(d["text"], values)   # {규칙 키} → 규칙값 (문서 숫자 = 판단 숫자)
         title = text.splitlines()[0].lstrip("# ").strip()
-        doc_id = (re.search(r"\((POL-\d+)\)", title) or re.search(r"(POL-\d+)", f.name)).group(1)
+        doc_id = (re.search(r"\((POL-\d+)\)", title) or re.search(r"(POL-\d+)", d["name"])).group(1)
         for sec in re.split(r"\n(?=## )", text)[1:]:
             head = sec.splitlines()[0].lstrip("# ").strip()
             num = (re.match(r"(\d+)\.", head) or [None, "?"])[1]
@@ -102,7 +103,7 @@ def load_policies(values: dict | None = None) -> list[dict]:
             out.append({"kind": "policy", "sourceId": f"{doc_id} §{num}", "warehouseId": None,
                         "title": f"{title} — {head}", "content": body,
                         "embedText": f"{title} {head}\n{body}",
-                        "meta": {"docId": doc_id, "section": num, "heading": head, "file": f.name}})
+                        "meta": {"docId": doc_id, "section": num, "heading": head, "file": d["name"]}})
     return out
 
 
@@ -238,35 +239,84 @@ def knowledge_status() -> dict:
 
 
 # ---------------------------------------------------------------- Resources (원문 읽기)
-def _policy_files() -> dict:
-    """docId → 파일. 화면에서 고친 문서(DOC_OVERRIDE_DIR 의 같은 이름)가 있으면 그것"""
+DOC_DDL = """
+CREATE SCHEMA IF NOT EXISTS box_agent;
+CREATE TABLE IF NOT EXISTS box_agent.policy_doc (
+    doc_id     varchar(20)  PRIMARY KEY,         -- POL-02
+    file_name  varchar(200) NOT NULL,            -- 기본 문서 파일 이름(knowledge/policies)
+    markdown   text         NOT NULL,            -- {규칙 키} 자리를 그대로 둔 원문 틀
+    updated_by varchar(100),
+    updated_at timestamptz  NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS box_agent.policy_doc_history (
+    id         bigserial    PRIMARY KEY,
+    doc_id     varchar(20)  NOT NULL,
+    markdown   text         NOT NULL,            -- 저장한 원문(이전 판은 바로 앞 행)
+    changed_by varchar(100),
+    changed_at timestamptz  NOT NULL DEFAULT now()
+);
+"""
+_DOC_READY = False
+
+
+def _doc_db() -> bool:
+    """고친 문서를 DB 에 두는지. 처음 쓸 때 테이블을 만들고, 비어 있으면 폴더의 고친 문서를 한 번 옮긴다"""
+    global _DOC_READY
+    if not db.enabled():
+        return False
+    if not _DOC_READY:
+        with db.connect() as con:
+            con.execute(DOC_DDL)
+            if not con.execute("SELECT 1 FROM box_agent.policy_doc LIMIT 1").fetchone():
+                for f in sorted(DOC_OVERRIDE_DIR.glob("*.md")) if DOC_OVERRIDE_DIR.exists() else []:
+                    m = re.search(r"(POL-\d+)", f.name)
+                    if m:
+                        con.execute("INSERT INTO box_agent.policy_doc (doc_id, file_name, markdown, updated_by) "
+                                    "VALUES (%s, %s, %s, 'file') ON CONFLICT DO NOTHING", (m.group(1), f.name, f.read_text(encoding="utf-8")))
+        _DOC_READY = True
+    return True
+
+
+def _policy_docs() -> dict:
+    """docId → {name, text(원문 틀), edited, updatedBy, updatedAt}. 본부장이 고친 문서가 있으면 그것"""
     out = {}
     for f in sorted((KDIR / "policies").glob("*.md")):
         m = re.search(r"(POL-\d+)", f.name)
         if m:
-            o = DOC_OVERRIDE_DIR / f.name
-            out[m.group(1)] = o if o.exists() else f
+            out[m.group(1)] = {"name": f.name, "text": f.read_text(encoding="utf-8"), "edited": False,
+                               "updatedBy": None, "updatedAt": None}
+    if _doc_db():
+        for r in db.query("SELECT doc_id, markdown, updated_by, updated_at FROM box_agent.policy_doc"):
+            if r["doc_id"] in out:
+                out[r["doc_id"]].update(text=r["markdown"], edited=True, updatedBy=r["updated_by"],
+                                        updatedAt=r["updated_at"].isoformat())
+    else:
+        for doc_id, d in out.items():
+            o = DOC_OVERRIDE_DIR / d["name"]
+            if o.exists():
+                d.update(text=o.read_text(encoding="utf-8"), edited=True)
     return out
 
 
 @mcp.tool()
 def get_policy_template(doc_id: str) -> dict:
     """규정 문서 원문 틀(고치기용). {규칙 키} 자리는 센터마다 규칙값으로 채워진다. placeholders = 쓸 수 있는 규칙 키와 이름"""
-    f = _policy_files().get(doc_id.upper())
-    if not f:
+    d = _policy_docs().get(doc_id.upper())
+    if not d:
         raise ToolError(f"없는 규정: {doc_id}")
     rules = policy_rules.load_rules()["rules"]
-    return {"docId": doc_id.upper(), "markdown": f.read_text(encoding="utf-8"), "edited": f.parent == DOC_OVERRIDE_DIR,
+    return {"docId": doc_id.upper(), "markdown": d["text"], "edited": d["edited"], "updatedBy": d["updatedBy"],
+            "updatedAt": d["updatedAt"],
             "placeholders": [{"key": k, "label": r.get("label", k)} for k, r in rules.items()]}
 
 
 @mcp.tool(annotations=ToolAnnotations(title="규정 문서 수정", destructiveHint=True, idempotentHint=True))
-def update_policy_document(doc_id: str, markdown: str) -> dict:
+def update_policy_document(doc_id: str, markdown: str, actor: str | None = None) -> dict:
     """[변경] 규정 문서(전 센터 공통)를 고쳐 저장하고 그 문서의 검색 색인을 다시 만든다. 본부장이 지침서 화면에서 고칠 때만 부른다.
     첫 줄 '# 제목 (POL-xx)', 조항 '## n. 제목' 형식과 {규칙 키}(규칙 파일에 있는 키만)를 지켜야 한다"""
     doc_id = doc_id.upper()
-    f = _policy_files().get(doc_id)
-    if not f:
+    doc = _policy_docs().get(doc_id)
+    if not doc:
         raise ToolError(f"없는 규정: {doc_id}")
     text = markdown.replace("\r\n", "\n").strip() + "\n"
     first = text.splitlines()[0]
@@ -277,9 +327,16 @@ def update_policy_document(doc_id: str, markdown: str) -> dict:
     unknown = sorted({k for k in policy_rules.PLACEHOLDER.findall(text)} - set(policy_rules.load_rules()["rules"]))
     if unknown:
         raise ToolError(f"규칙 파일에 없는 기준값 자리: {', '.join('{' + k + '}' for k in unknown)}")
-    DOC_OVERRIDE_DIR.mkdir(parents=True, exist_ok=True)
-    name = (KDIR / "policies").glob(f"*{doc_id}*.md").__next__().name
-    (DOC_OVERRIDE_DIR / name).write_text(text, encoding="utf-8")
+    if _doc_db():                             # 고친 문서 + 저장 이력(전 판 원문)
+        with db.connect() as con:
+            con.execute("INSERT INTO box_agent.policy_doc (doc_id, file_name, markdown, updated_by, updated_at) "
+                        "VALUES (%s, %s, %s, %s, now()) ON CONFLICT (doc_id) DO UPDATE SET markdown = EXCLUDED.markdown, "
+                        "updated_by = EXCLUDED.updated_by, updated_at = now()", (doc_id, doc["name"], text, actor))
+            con.execute("INSERT INTO box_agent.policy_doc_history (doc_id, markdown, changed_by) VALUES (%s, %s, %s)",
+                        (doc_id, text, actor))
+    else:
+        DOC_OVERRIDE_DIR.mkdir(parents=True, exist_ok=True)
+        (DOC_OVERRIDE_DIR / doc["name"]).write_text(text, encoding="utf-8")
     _MEM.clear()
     sections = [d for d in load_policies() if d["meta"]["docId"] == doc_id]
     if db.enabled():                          # 없어진 조항은 지우고 남은 조항을 다시 임베딩
@@ -293,8 +350,8 @@ def update_policy_document(doc_id: str, markdown: str) -> dict:
               description="규정 문서 목록(docId, 제목, 조항 제목). 원문은 policy://{doc_id}")
 def policy_index() -> dict:
     items = []
-    for doc_id, f in _policy_files().items():
-        text = f.read_text(encoding="utf-8")
+    for doc_id, d in _policy_docs().items():
+        text = d["text"]
         items.append({"docId": doc_id, "uri": f"policy://{doc_id}", "title": text.splitlines()[0].lstrip("# ").strip(),
                       "sections": [ln.lstrip("# ").strip() for ln in text.splitlines() if ln.startswith("## ")]})
     return {"items": items}
@@ -303,19 +360,19 @@ def policy_index() -> dict:
 @mcp.resource("policy://{doc_id}", name="policy", mime_type="text/markdown",
               description="규정 원문 markdown (예: policy://POL-02). 검색 결과 sourceId 'POL-02 §2' 의 문서 부분")
 def policy_document(doc_id: str) -> str:
-    f = _policy_files().get(doc_id.upper())
-    if not f:
-        raise ValueError(f"없는 규정: {doc_id}. 있는 규정: {', '.join(_policy_files())}")
-    return policy_rules.render(f.read_text(encoding="utf-8"))
+    d = _policy_docs().get(doc_id.upper())
+    if not d:
+        raise ValueError(f"없는 규정: {doc_id}. 있는 규정: {', '.join(_policy_docs())}")
+    return policy_rules.render(d["text"])
 
 
 @mcp.resource("policy://{doc_id}/center/{warehouse_id}", name="policy-center", mime_type="text/markdown",
               description="센터 규칙값으로 채운 규정 원문 (예: policy://POL-02/center/<warehouseId>)")
 def policy_document_center(doc_id: str, warehouse_id: str) -> str:
-    f = _policy_files().get(doc_id.upper())
-    if not f:
-        raise ValueError(f"없는 규정: {doc_id}. 있는 규정: {', '.join(_policy_files())}")
-    return policy_rules.render(f.read_text(encoding="utf-8"), policy_rules.effective(warehouse_id)["values"])
+    d = _policy_docs().get(doc_id.upper())
+    if not d:
+        raise ValueError(f"없는 규정: {doc_id}. 있는 규정: {', '.join(_policy_docs())}")
+    return policy_rules.render(d["text"], policy_rules.effective(warehouse_id)["values"])
 
 
 @mcp.resource("feedback://{case_id}", name="feedback-case", mime_type="application/json",

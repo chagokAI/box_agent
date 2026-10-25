@@ -1,8 +1,9 @@
 """
-박스 주문 규칙 로더 — rules/box_order_rules.yaml (+ rules/overrides/<warehouseId>.yaml) 를 읽어 검증한다.
+박스 주문 규칙 로더 — 기본값·범위는 rules/box_order_rules.yaml(코드와 함께 검토·배포), 센터별 조정값은 DB 에 둔다.
 
-business-mcp get_policy_rules 와 rag 적재(규정 문서 숫자 채우기)가 같이 쓴다.
-나중에 DB(policy_rule, policy_rule_override)로 옮기면 load_rules / load_overrides 안쪽만 바꾼다.
+- 센터 조정: DB_URL 이 있으면 box_agent.center_rule(센터 × 규칙 키 → 값) + center_rule_history(바꿀 때마다 이전→새 값·이유·바꾼 사람).
+  DB 가 없으면(로컬 CLI·테스트) rules/overrides/<warehouseId>.yaml 파일. DB 를 처음 쓸 때 파일 조정값이 있으면 한 번 옮긴다.
+- business-mcp get_policy_rules 와 rag(규정 문서 숫자 채우기)가 같이 쓴다.
 """
 from __future__ import annotations
 
@@ -12,10 +13,55 @@ from pathlib import Path
 
 import yaml
 
+import chagok_db as db
+
 ROOT = Path(__file__).resolve().parent.parent
 RULES_PATH = Path(os.getenv("POLICY_RULES", ROOT / "rules" / "box_order_rules.yaml"))
 OVERRIDE_DIR = Path(os.getenv("POLICY_RULE_OVERRIDES", ROOT / "rules" / "overrides"))
 PLACEHOLDER = re.compile(r"\{([a-zA-Z_][\w.]*)\}")
+DDL = """
+CREATE SCHEMA IF NOT EXISTS box_agent;
+CREATE TABLE IF NOT EXISTS box_agent.center_rule (
+    warehouse_id uuid         NOT NULL,
+    rule_key     varchar(80)  NOT NULL,
+    value        jsonb        NOT NULL,
+    updated_by   varchar(100),
+    updated_at   timestamptz  NOT NULL DEFAULT now(),
+    PRIMARY KEY (warehouse_id, rule_key)
+);
+CREATE TABLE IF NOT EXISTS box_agent.center_rule_history (
+    id           bigserial    PRIMARY KEY,
+    warehouse_id uuid         NOT NULL,
+    rule_key     varchar(80)  NOT NULL,
+    before_value jsonb,                          -- NULL = 기본값이었음
+    after_value  jsonb,                          -- NULL = 기본값으로 되돌림
+    reason       varchar(200),
+    changed_by   varchar(100),
+    changed_at   timestamptz  NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ix_center_rule_history_wh ON box_agent.center_rule_history (warehouse_id, changed_at DESC);
+"""
+_READY = False
+
+
+def _db() -> bool:
+    """DB 저장을 쓰는지. 처음 쓸 때 테이블을 만들고, 비어 있으면 파일 조정값을 한 번 옮긴다"""
+    global _READY
+    if not db.enabled():
+        return False
+    if not _READY:
+        from psycopg.types.json import Jsonb
+        with db.connect() as con:
+            con.execute(DDL)
+            if not con.execute("SELECT 1 FROM box_agent.center_rule LIMIT 1").fetchone():
+                for f in sorted(OVERRIDE_DIR.glob("*.yaml")) if OVERRIDE_DIR.exists() else []:
+                    for k, v in (yaml.safe_load(f.read_text(encoding="utf-8")) or {}).items():
+                        con.execute("INSERT INTO box_agent.center_rule (warehouse_id, rule_key, value, updated_by) "
+                                    "VALUES (%s, %s, %s, 'file') ON CONFLICT DO NOTHING", (f.stem, k, Jsonb(v)))
+                        con.execute("INSERT INTO box_agent.center_rule_history (warehouse_id, rule_key, after_value, reason, "
+                                    "changed_by) VALUES (%s, %s, %s, '파일 조정값 옮김', 'file')", (f.stem, k, Jsonb(v)))
+        _READY = True
+    return True
 
 
 def load_rules() -> dict:
@@ -49,14 +95,27 @@ def cast(rule: dict, raw):
 
 
 def load_overrides(warehouse_id: str | None) -> dict:
-    """센터별 덮어쓰기 {key: value}. 파일 rules/overrides/<warehouseId>.yaml (없으면 빈 값)"""
+    """센터별 덮어쓰기 {key: value}. DB box_agent.center_rule, DB 가 없으면 파일 rules/overrides/<warehouseId>.yaml"""
     if not warehouse_id:
         return {}
+    if _db():
+        return {r["rule_key"]: r["value"] for r in
+                db.query("SELECT rule_key, value FROM box_agent.center_rule WHERE warehouse_id = %(w)s", {"w": warehouse_id})}
     f = OVERRIDE_DIR / f"{warehouse_id}.yaml"
     return (yaml.safe_load(f.read_text(encoding="utf-8")) or {}) if f.exists() else {}
 
 
-def save_overrides(warehouse_id: str, changes: dict) -> dict:
+def history(warehouse_id: str, limit: int = 50) -> list[dict]:
+    """센터 규칙 변경 이력(최신순). DB 가 없으면 빈 목록"""
+    if not _db():
+        return []
+    return [{**r, "changedAt": r.pop("changed_at").isoformat()} for r in db.query(
+        "SELECT rule_key AS key, before_value AS before, after_value AS after, reason, changed_by AS \"changedBy\", changed_at "
+        "FROM box_agent.center_rule_history WHERE warehouse_id = %(w)s ORDER BY changed_at DESC, id DESC LIMIT %(n)s",
+        {"w": warehouse_id, "n": limit})]
+
+
+def save_overrides(warehouse_id: str, changes: dict, actor: str | None = None, reason: str | None = None) -> dict:
     """센터 덮어쓰기에 changes 를 합쳐 저장한다(본부 승인·본부장 지침서 수정). 값이 None 이면 그 키의 덮어쓰기를 지워 기본값으로.
     없는 규칙·전사 고정·범위 밖 값은 ValueError"""
     rules = load_rules()["rules"]
@@ -71,6 +130,27 @@ def save_overrides(warehouse_id: str, changes: dict) -> dict:
             drop.add(k)
             continue
         clean[k] = cast(r, raw)
+    if _db():                                # 한 트랜잭션: 조정값 반영 + 바뀐 것만 이력
+        from psycopg.types.json import Jsonb
+        with db.connect() as con:
+            before = {r["rule_key"]: r["value"] for r in con.execute(
+                "SELECT rule_key, value FROM box_agent.center_rule WHERE warehouse_id = %s FOR UPDATE", (warehouse_id,))}
+            for k, v in clean.items():
+                if before.get(k) == v:
+                    continue
+                con.execute("INSERT INTO box_agent.center_rule (warehouse_id, rule_key, value, updated_by, updated_at) "
+                            "VALUES (%s, %s, %s, %s, now()) ON CONFLICT (warehouse_id, rule_key) DO UPDATE SET "
+                            "value = EXCLUDED.value, updated_by = EXCLUDED.updated_by, updated_at = now()",
+                            (warehouse_id, k, Jsonb(v), actor))
+                con.execute("INSERT INTO box_agent.center_rule_history (warehouse_id, rule_key, before_value, after_value, "
+                            "reason, changed_by) VALUES (%s, %s, %s, %s, %s, %s)",
+                            (warehouse_id, k, Jsonb(before[k]) if k in before else None, Jsonb(v), reason, actor))
+            for k in drop & set(before):
+                con.execute("DELETE FROM box_agent.center_rule WHERE warehouse_id = %s AND rule_key = %s", (warehouse_id, k))
+                con.execute("INSERT INTO box_agent.center_rule_history (warehouse_id, rule_key, before_value, after_value, "
+                            "reason, changed_by) VALUES (%s, %s, %s, NULL, %s, %s)",
+                            (warehouse_id, k, Jsonb(before[k]), reason, actor))
+        return load_overrides(warehouse_id)
     cur = load_overrides(warehouse_id)
     cur.update(clean)
     for k in drop:
