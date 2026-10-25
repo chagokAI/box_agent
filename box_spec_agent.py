@@ -1333,8 +1333,8 @@ async def save_result(state: AgentState):
         "totalAmount": plan["totals"]["amount"], "totals": plan["totals"],
         "forecast": {k: state["forecast"][k] for k in ("forecast", "method", "accuracy_pct", "sameMonthLastYear")},
         # boxSpecId 있는 줄 → procurement_proposal_item, 없는 줄(미등록 신규 규격) → summary에만
-        # 서버(AgentProposalItemService)는 NEW_SPEC 줄을 박스왕 카탈로그 근거로 box_spec 에 등록한다.
-        # 맞춤 규격은 공급사 미등록·정식 견적 전이라 CUSTOM_SPEC 으로 남겨 자동 등록·발주에서 빠지게 한다
+        # 서버는 NEW_SPEC을 카탈로그 근거로, CUSTOM_SPEC을 저장된 맞춤 견적 근거로 발주 초안에 연결한다.
+        # 맞춤 규격은 초안 단계에는 비활성이고, 관리자가 발주를 승인한 뒤 활성화된다(재고는 입고 시 반영).
         "lines": [{"type": ("CUSTOM_SPEC" if r["code"] in custom_codes else "NEW_SPEC") if r["isNew"] else "REPLENISH",
                    "boxCode": r["code"],
                    "boxSpecId": None if r["isNew"] else spec_id.get(r["code"]), "dims": r["dims"],
