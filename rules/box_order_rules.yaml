@@ -32,19 +32,19 @@ rules:
      source: POL-02 §2, label: 군집 후보 부피 상한(이상 치수 대비)}
 
   # ── 도입 게이트 (POL-02 §2, §6) ─────────────────────────────────────────
-  - {key: gate.CATALOG.monthly_saving, value: 300000, type: int, unit: 원, range: [0, 5000000], scope: center, feedback: true,
+  - {key: gate.CATALOG.monthly_saving, value: 300000, type: int, unit: 원, range: [0, 5000000], scope: center, feedback: true, hq_tune: true,
      source: POL-02 §2, label: 기성품 신규 규격 월 절감액 기준}
   - {key: gate.CATALOG.share_pct, value: 3, type: float, unit: "%", range: [0, 50], scope: center, feedback: true,
      source: POL-02 §2, label: 기성품 신규 규격 대상 출고 비중 기준}
-  - {key: gate.CATALOG.delta_fill, value: 10, type: float, unit: "%p", range: [0, 50], scope: center, feedback: true,
+  - {key: gate.CATALOG.delta_fill, value: 2, type: float, unit: "%p", range: [0, 50], scope: center, feedback: true, hq_tune: true,
      source: POL-02 §2, label: 기성품 신규 규격 충진율 개선 기준}
   - {key: gate.CUSTOM.monthly_saving, value: 300000, type: int, unit: 원, range: [0, 5000000], scope: center, feedback: true,
      source: POL-02 §6, label: 맞춤 규격 월 절감액 기준}
   - {key: gate.CUSTOM.share_pct, value: 3, type: float, unit: "%", range: [0, 50], scope: center, feedback: false,
      source: POL-02 §6, label: 맞춤 규격 대상 출고 비중 기준}
-  - {key: gate.CUSTOM.delta_fill, value: 10, type: float, unit: "%p", range: [0, 50], scope: center, feedback: false,
+  - {key: gate.CUSTOM.delta_fill, value: 2, type: float, unit: "%p", range: [0, 50], scope: center, feedback: false,
      source: POL-02 §6, label: 맞춤 규격 충진율 개선 기준}
-  - {key: gate.CUSTOM.payback_m, value: 6, type: float, unit: 개월, range: [0, 36], scope: center, feedback: true,
+  - {key: gate.CUSTOM.payback_m, value: 3, type: float, unit: 개월, range: [0, 36], scope: center, feedback: true, hq_tune: true,
      source: POL-02 §6, label: 맞춤 규격 판비·목형비 회수 기간}
   - {key: no_new_specs, value: false, type: bool, scope: center, feedback: true,
      source: POL-02 §1, label: 신규 규격 없이 기존 규격만 보충}
