@@ -59,6 +59,8 @@ elif a[0] == "inspect":
     service = a[-1].removesuffix("-container")
     if a[2] == "{{.Image}}":
         print(s["current"][service])
+    elif a[2] == "{{json .Config.Env}}":
+        print(json.dumps(["DB_URL=jdbc:postgresql://postgres:5432/chagok", "DB_USERNAME=app", "DB_PASSWORD=test-only"]))
     elif a[2] == "{{.State.Running}}":
         print("true")
     else:
@@ -147,6 +149,9 @@ class DeploymentTests(unittest.TestCase):
             override = json.loads((self.state_dir / OVERRIDE).read_text())["services"]
             self.assertEqual(override["rag-ingest"]["image"], IMAGE)
             self.assertEqual(override["business-mcp"]["environment"]["CATALOG_DB"], "/app/proposals/catalog.db")
+            self.assertEqual(override["business-mcp"]["environment"]["DB_URL"], "jdbc:postgresql://postgres:5432/chagok")
+            self.assertEqual(override["business-mcp"]["environment"]["DB_PASSWORD"], "test-only")
+            self.assertEqual((self.state_dir / OVERRIDE).stat().st_mode & 0o777, 0o600)
             self.assertEqual(len(list((self.root / "backups").glob("*.dump"))), 1)
 
     def test_failed_pull_preserves_services_and_state(self):
