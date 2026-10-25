@@ -63,7 +63,23 @@ details ul{margin:12px 0 0 18px;color:var(--text2)}details li{margin:6px 0}
 details h3{font-size:13px;margin:16px 0 4px}
 .tip{position:fixed;pointer-events:none;background:var(--text);color:var(--surface);font-size:12px;padding:6px 9px;border-radius:6px;opacity:0;transition:opacity .1s;white-space:nowrap;z-index:9}
 svg text{font:11px -apple-system,"Apple SD Gothic Neo",sans-serif;fill:var(--text2)}
-@media (max-width:640px){.kpis{grid-template-columns:1fr 1fr}.kpi:nth-child(2){border-right:none}.two{grid-template-columns:1fr}.sum span{min-width:0;width:100%}.sum strong{font-size:23px}}
+/* 화면 카드 안(iframe)에 넣을 때: 카드가 테두리를 맡으므로 바깥 여백·테두리를 없앤다 */
+.embed body{padding:0;background:var(--surface)}
+.embed .page{max-width:none;border:none;border-radius:0;box-shadow:none}
+/* 반쪽 화면(카드 폭 ~600px) 이하: 여백을 줄이고 요약은 이름 위·숫자 아래로 쌓고 표는 한 줄에 맞춘다 */
+@media (max-width:720px){
+  .top{padding:12px 16px}
+  .hero{padding:22px 18px}
+  .sum{gap:12px}.sum li{flex-direction:column;align-items:flex-start;gap:4px;padding-bottom:12px}
+  .sum span{min-width:0;font-size:13px}.sum strong{font-size:22px}.sum em{font-size:12px}
+  .kpis{grid-template-columns:1fr 1fr}.kpi{padding:14px 16px;border-bottom:1px solid var(--line)}
+  .kpi:nth-child(2n){border-right:none}.kpi:nth-last-child(-n+2){border-bottom:none}.kpi .v{font-size:19px}
+  section{padding:20px 16px}
+  table{font-size:12.5px}th,td{padding:8px 4px;white-space:nowrap}th{font-size:11px}
+  td:first-child{white-space:normal}
+  .two{grid-template-columns:1fr;gap:14px}.amount{font-size:24px}
+  details{padding:16px}
+}
 @media print{body{padding:0}.page{border:none;box-shadow:none}details>*{display:block}}
 </style>
 </head>
@@ -109,6 +125,14 @@ svg text{font:11px -apple-system,"Apple SD Gothic Neo",sans-serif;fill:var(--tex
   </details>
 </div>
 <div class="tip" id="tip"></div>
+<script>
+// 화면 카드 안(iframe)이면 embed 모양으로 바꾸고, 내용 높이를 부모에 알려 안쪽 스크롤 없이 늘었다 줄었다 하게 한다.
+// 문서 scrollHeight 는 틀 높이 아래로 줄지 않으므로(상세보기를 닫아도 그대로) 내용(body) 높이를 잰다
+if(window.self!==window.top){document.documentElement.classList.add('embed');
+ const send=()=>parent.postMessage({type:'chagok-proposal-height',height:Math.ceil(document.body.getBoundingClientRect().height)},'*');
+ new ResizeObserver(send).observe(document.body);addEventListener('load',send);
+ document.addEventListener('toggle',send,true)}
+</script>
 <script id="chart-data" type="application/json">{{{chartData}}}</script>
 <script>
 const D=JSON.parse(document.getElementById('chart-data').textContent);
