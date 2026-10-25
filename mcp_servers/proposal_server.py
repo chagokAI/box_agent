@@ -90,9 +90,9 @@ def _html_fragments(d: dict) -> dict:
         return '<span class="new">신규·맞춤</span>' if r.get("isCustom") else '<span class="new">신규</span>' if r.get("isNew") else ""
     rows = "".join(
         f'<tr><td>{_esc(r["label"])}{chip(r)}</td>'
-        f'<td>{r["currentQty"]:,}</td><td>{r["expectedUsage"]:,}</td><td>{r["safetyQty"]:,}</td><td><b>{r["proposedQty"]:,}개</b></td></tr>'
+        f'<td>{r.get("startQty", r["currentQty"]):,}</td><td>{r["expectedUsage"]:,}</td><td>{r["safetyQty"]:,}</td><td><b>{r["proposedQty"]:,}개</b></td></tr>'
         for r in d["orderRows"])
-    rows += (f'<tr class="total"><td>합계</td><td>{t["current"]:,}</td><td>{t["usage"]:,}</td><td>{t["safety"]:,}</td>'
+    rows += (f'<tr class="total"><td>합계</td><td>{t.get("start", t["current"]):,}</td><td>{t["usage"]:,}</td><td>{t["safety"]:,}</td>'
              f'<td>{t["qty"]:,}개</td></tr>')
     skipped = (f'<p class="note">{_esc(", ".join(d["skipped"]))}는 재고 충분으로 이번 발주 제외</p>' if d.get("skipped") else "")
     eff, parts, good, gap = d.get("effect"), [], ' class="g"', ' style="margin-top:22px"'
