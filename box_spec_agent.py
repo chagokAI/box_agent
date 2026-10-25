@@ -914,7 +914,7 @@ def _html_data(state: AgentState, values: dict, sel: list, checks: list[str], re
             ob, oa = block["overall_fill_before"], block["overall_fill_after"]
             kpis.append({"label": "센터 전체 충진율", "value": f"{ob} → {oa}%", "sub": f"{oa - ob:+.1f}%p", "up": oa > ob})
     kpis.append({"label": "수요예측 정확도", "value": f"{fc['accuracy_pct']}%" if fc.get("accuracy_pct") is not None else "미산출",
-                 "sub": "최근 6개월 백테스트"})
+                 "sub": f"최근 {len(fc.get('backtest') or []) or 3}개월 백테스트"})
     custom = None
     if (ce := state.get("custom_effect")) and (cu := state.get("custom_unfit")):
         oq = (state.get("order_quotes") or {}).get(cu["code"]) or cu["quote"]

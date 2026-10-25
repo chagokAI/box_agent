@@ -35,7 +35,7 @@ def _recent_forecast(hist: dict, target: str):
 
 
 @mcp.tool()
-def forecast_shipments(history: list[dict], target_month: str, backtest_months: int = 6, seasonal: bool = False) -> dict:
+def forecast_shipments(history: list[dict], target_month: str, backtest_months: int = 3, seasonal: bool = False) -> dict:
     """월별 출고 이력으로 target_month 출고 건수를 예측하고(seasonal 이면 전년 동월 계절 지수 적용),
     최근 backtest_months개월 백테스트로 정확도(100 - MAPE)를 계산한다."""
     hist = {h["month"]: h["shipments"] for h in history}
