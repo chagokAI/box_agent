@@ -9,6 +9,9 @@
   GET  /internal/agent/tasks/{taskId}/events     진행 이벤트 SSE (Last-Event-ID 로 이어 받기)
   POST /internal/agent/tasks/{taskId}/approval   승인·반려 {decision: APPROVED|REJECTED, comment} → 202, 같은 thread_id 로 재개
   POST /internal/agent/hq-reports                본부 통합 효율화 리포트 {month, note} → 202 {taskId} (조치가 있으면 승인 대기)
+  GET  /internal/agent/hq-reports                만들어 둔 본부 리포트 월 목록
+  GET  /internal/agent/hq-reports/{month}        그 월의 본부 리포트 {month, html}
+  GET  /internal/agent/hq-reports/readiness?month=YYYY-MM   리포트 만들기 전 센터별 제안서 현황
   GET  /internal/agent/policies/{docId}          규정 문서 원문 틀(고치기용, {규칙 키} 자리 포함)
   PUT  /internal/agent/policies/{docId}          규정 문서 수정 {markdown} (전 센터 공통) → 검색 색인도 다시 만든다
   GET  /internal/agent/centers                   센터 목록 (지침서 화면)
@@ -95,9 +98,12 @@ class Task:
             self.changed.notify_all()
 
     def view(self) -> dict:
-        return {"taskId": self.id, "status": self.status, "job": self.job, "result": self.result, "error": self.error,
-                "traceId": self.trace and self.trace["traceId"], "events": len(self.events),
-                "harness": self.trace and self._summary()}
+        out = {"taskId": self.id, "kind": self.kind, "status": self.status, "job": self.job, "result": self.result,
+               "error": self.error, "traceId": self.trace and self.trace["traceId"], "events": len(self.events),
+               "harness": self.trace and self._summary()}
+        if self.kind == "hq" and self.status == "WAITING_APPROVAL":   # 본부 리포트: 승인할 조치(화면 승인 버튼용)
+            out["pending"] = next((e["data"] for e in reversed(self.events) if e["event"] == "APPROVAL_REQUIRED"), None)
+        return out
 
     def _summary(self) -> dict:
         harness.resume_trace(self.trace)
@@ -218,6 +224,59 @@ async def create_hq_report(body: HQTaskCreate):
     return {"taskId": task_id, "traceId": task.trace and task.trace["traceId"], "job": job}
 
 
+@app.get("/internal/agent/hq-reports", dependencies=[Depends(require_token)])
+async def list_hq_reports():
+    """본부 리포트 에이전트가 만든 월별 리포트(HQ_REPORT_DIR/<실행 월>/hq_report_YYYY-MM.html). 같은 월은 가장 최근 실행본"""
+    found: dict = {}
+    for f in sorted(hq.OUT_DIR.glob("*/hq_report_*.html"), key=lambda f: f.stat().st_mtime):
+        found[f.stem.removeprefix("hq_report_")] = f
+    return {"items": [{"month": m, "generatedAt": datetime.fromtimestamp(f.stat().st_mtime).isoformat(timespec="seconds")}
+                      for m, f in sorted(found.items(), reverse=True)]}
+
+
+@app.get("/internal/agent/hq-reports/readiness", dependencies=[Depends(require_token)])
+async def hq_readiness(month: str):
+    """본부 리포트는 승인된 박스 주문 제안의 효과를 모은다 → 센터마다 그 월까지 저장된 제안서가 있는지(대상 월 기준)"""
+    if not (len(month) == 7 and month[4] == "-"):
+        raise HTTPException(400, "month 는 YYYY-MM")
+    whs = (await agent.mcp_call("api", "business", "list_warehouses"))["items"]
+    centers = []
+    for w in whs:
+        past = (await agent.mcp_call("api", "business", "list_past_proposals", warehouse_id=w["warehouseId"], limit=24))["items"]
+        upto = sorted({p["targetMonth"] for p in past if p["targetMonth"] <= month})
+        centers.append({"warehouseId": w["warehouseId"], "name": w["name"], "proposalMonths": len(upto),
+                        "thisMonth": month in upto, "latestMonth": upto[-1] if upto else None})
+    ready = [c for c in centers if c["proposalMonths"]]
+    return {"month": month, "total": len(centers), "readyCount": len(ready),
+            "thisMonthCount": sum(c["thisMonth"] for c in centers), "centers": centers}
+
+
+@app.get("/internal/agent/policies/{doc_id}", dependencies=[Depends(require_token)])
+async def get_policy(doc_id: str):
+    try:
+        return await agent.mcp_call("api", "rag", "get_policy_template", doc_id=doc_id)
+    except Exception as e:
+        raise HTTPException(404, str(e).rsplit("get_policy_template: ", 1)[-1]) from e
+
+
+@app.put("/internal/agent/policies/{doc_id}", dependencies=[Depends(require_token)])
+async def update_policy(doc_id: str, body: PolicyUpdate):
+    """규정 문서(전 센터 공통) 수정. 형식·{규칙 키} 검증은 rag 의 update_policy_document"""
+    try:
+        r = await agent.mcp_call("api", "rag", "update_policy_document", doc_id=doc_id, markdown=body.markdown)
+    except Exception as e:
+        raise HTTPException(400, str(e).rsplit("update_policy_document: ", 1)[-1]) from e
+    return {**r, **await agent.mcp_call("api", "rag", "get_policy_template", doc_id=doc_id)}
+
+
+@app.get("/internal/agent/hq-reports/{month}", dependencies=[Depends(require_token)])
+async def get_hq_report(month: str):
+    files = sorted(hq.OUT_DIR.glob(f"*/hq_report_{month}.html"), key=lambda f: f.stat().st_mtime)
+    if not files:
+        raise HTTPException(404, f"{month} 본부 리포트가 없음")
+    return {"month": month, "html": files[-1].read_text(encoding="utf-8")}
+
+
 @app.get("/internal/agent/centers", dependencies=[Depends(require_token)])
 async def list_centers():
     return await agent.mcp_call("api", "business", "list_warehouses")
@@ -247,24 +306,6 @@ async def update_guide(warehouse_id: str, body: GuideUpdate):
     except Exception as e:                  # 규칙 파일 검증 실패: 'MCP 도구 실패: … set_center_overrides: <이유>' 에서 이유만
         raise HTTPException(400, str(e).rsplit("set_center_overrides: ", 1)[-1]) from e
     return await _guide(warehouse_id)
-
-
-@app.get("/internal/agent/policies/{doc_id}", dependencies=[Depends(require_token)])
-async def get_policy(doc_id: str):
-    try:
-        return await agent.mcp_call("api", "rag", "get_policy_template", doc_id=doc_id)
-    except Exception as e:
-        raise HTTPException(404, str(e).rsplit("get_policy_template: ", 1)[-1]) from e
-
-
-@app.put("/internal/agent/policies/{doc_id}", dependencies=[Depends(require_token)])
-async def update_policy(doc_id: str, body: PolicyUpdate):
-    """규정 문서(전 센터 공통) 수정. 형식·{규칙 키} 검증은 rag 의 update_policy_document"""
-    try:
-        r = await agent.mcp_call("api", "rag", "update_policy_document", doc_id=doc_id, markdown=body.markdown)
-    except Exception as e:
-        raise HTTPException(400, str(e).rsplit("update_policy_document: ", 1)[-1]) from e
-    return {**r, **await agent.mcp_call("api", "rag", "get_policy_template", doc_id=doc_id)}
 
 
 @app.get("/internal/agent/tasks/{task_id}", dependencies=[Depends(require_token)])
