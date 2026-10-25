@@ -175,6 +175,7 @@ class AgentState(TypedDict, total=False):
     inventory: list                           # 규격별 현재 재고
     shipment_history: list                    # 월별 출고 건수
     purchase_orders: list                     # 전월·전년 동월 발주
+    inbound_orders: list                      # 아직 입고되지 않은 발주(승인·배송 중) 규격별 수량
     forecast: dict                            # 다음 달 출고 예측·정확도
     product_fits: list                        # 상품별 치수·출고량·배정박스·충진율·원인
     unfit_products: list                      # 보유 규격 어디에도 안 들어가 포장 대기한 상품(서버 NO_AVAILABLE_BOX)
@@ -358,6 +359,7 @@ async def collect_data(state: AgentState):
     progress("collect_data", f"{basis} 출고 이력에서 상품 {len(prods['items'])}종, 박스 규격 {len(specs['items'])}종을 불러왔어요")
     return {"box_specs": specs["items"], "product_fits": prods["items"], "inventory": inv["items"],
             "shipment_history": hist["items"], "purchase_orders": pos["items"], "data_meta": meta,
+            "inbound_orders": (await mcp_call("collect_data", "business", "list_inbound_orders", warehouse_id=wh))["items"],
             "messages": ["collect_data"]}
 
 
@@ -630,12 +632,22 @@ async def plan_order(state: AgentState):
     y, m = map(int, tm.split("-"))
     peak = bool(cfg["peak_auto"] and m in cfg["peak_months"])        # 성수기 안전 재고(POL-03 §1)
     safety_days = cfg["peak_safety_days"] if peak else cfg["safety_days"]
+    # 월초 예상 재고: 데이터 기준 시각부터 대상 월 1일까지 남은 소모를 빼고, 미입고 발주를 더한다.
+    # 같은 대상 월 제안으로 만든 발주는 이번 제안이 대신하므로 빼지 않는다(다시 만들 때 중복 방지)
+    as_of = datetime.fromisoformat(state["data_meta"]["inputAsOf"]) if state["data_meta"].get("inputAsOf") else datetime.now(KST)
+    start_at = datetime(y, m, 1, tzinfo=KST)
+    remaining = round(max(0.0, (start_at - as_of.astimezone(KST)).total_seconds() / 86400), 2)
+    inbound: dict[str, int] = {}
+    for o in state.get("inbound_orders") or []:
+        if o.get("proposalTargetMonth") != tm:
+            inbound[o["code"]] = inbound.get(o["code"], 0) + int(o["qty"])
     r = await mcp_call("plan_order", "business", "plan_order",
                        products=products, box_specs=specs, new_specs=new_specs,
                        inventory=state["inventory"], forecast_shipments=state["forecast"]["forecast"],
                        days_in_month=calendar.monthrange(y, m)[1], safety_days=safety_days,
                        rounding_unit=cfg["rounding_unit"], margin_mm=cfg["margin_mm"], allow_tilt=cfg["allow_tilt"],
-                       tilt_clearance_mm=cfg["tilt_clearance_mm"], max_stock_months=cfg["max_stock_months"])
+                       tilt_clearance_mm=cfg["tilt_clearance_mm"], max_stock_months=cfg["max_stock_months"],
+                       remaining_days=remaining, inbound=inbound)
     r["safetyDays"], r["peakSafety"] = safety_days, peak
     order_quotes = await _requote_custom(state, r)
     for row in r["orderRows"]:
@@ -645,6 +657,8 @@ async def plan_order(state: AgentState):
     t = r["totals"]
     log("plan_order", f"{t['specCount']}개 규격 총 {n(t['qty'])}개, {n(t['amount'])}원 | 발주 제외: {r['skipped']} "
                       f"(* = 규격에 설정된 안전 재고)")
+    log("plan_order", f"월초 예상 재고 = 현재 {n(t['current'])} − 이달 남은 소모 {n(t['consumeBefore'])}"
+                      f"({remaining:g}일) + 입고 예정 {n(t['inbound'])} = {n(t['start'])}")
     progress("plan_order", f"규격 {t['specCount']}종, 총 {kr(t['qty'])}개, 약 {kr(t['amount'])}원어치 주문이 필요해요")
     return {"order_plan": r, "order_quotes": order_quotes, "messages": ["plan_order"]}
 
@@ -754,7 +768,7 @@ def _check_items(state: AgentState, sel: list, prev_amt, ly_amt) -> list[str]:
                       f"상한 조정 여부 결정 필요")
     for r in plan["orderRows"]:                      # POL-04 §2 규격별 재고 보관 상한
         if r.get("overStock"):
-            checks.append(f"{r['label']}: 재고(현재 {n(r['currentQty'])} + 제안 {n(r['proposedQty'])})가 "
+            checks.append(f"{r['label']}: 재고(월초 예상 {n(r.get('startQty', r['currentQty']))} + 제안 {n(r['proposedQty'])})가 "
                           f"{cfg['max_stock_months']:g}개월 소모분 {n(r['stockCap'])}개를 넘음 — 보관 공간 확인·입고 분할 결정 필요")
     comb, res0 = state.get("sim_combined") or {}, (state.get("sim_results") or [{}])[0]    # POL-02 §7 충진율 목표
     reg = comb.get("reg_fill_after", res0.get("reg_fill_before"))
@@ -923,7 +937,7 @@ def _html_data(state: AgentState, values: dict, sel: list, checks: list[str], re
                            ["대상 출고 충진율", "포장 불가", f"{ce['fill']}%"],
                            ["월 박스비 · 운임", "—", f"{n(round(ce['box_krw'] * oq['unitPrice'] / cu['price']))}원 · "
                                                     f"{n(ce['freight_krw'])}원"]]}
-    rows = [{**{k: r[k] for k in ("label", "currentQty", "expectedUsage", "safetyQty", "proposedQty", "amount")},
+    rows = [{**{k: r[k] for k in ("label", "currentQty", "startQty", "expectedUsage", "safetyQty", "proposedQty", "amount")},
              "isNew": r["isNew"], "isCustom": r["code"] in custom_codes} for r in plan["orderRows"]]
     method = [reasons[3], "도입 효과·예상 이익은 분석 기간 출고를 한 달(30일)로 환산, 연 환산 = 월 ÷ 30 × 365", FREIGHT_BASIS,
               f"전월({values['prevMonthLabel']} 발주 {values['prevMonthAmount']}) {mom['sign']} {mom['rate']}%, "
@@ -1001,7 +1015,9 @@ async def write_proposal(state: AgentState):
     days_left = (top["currentQty"] / (top["expectedUsage"] / dim)) if top and top["expectedUsage"] else 0
     reason3 = (f"{top['label']}: 현재 재고 {n(top['currentQty'])}개로 약 {days_left:.0f}일분 — 보충 수량이 가장 큼"
                if top else "기존 규격은 재고 충분")
-    formula = f"제안 수량 = 다음 달 예상 소모 + 안전 재고 − 현재 재고 ({state['config']['rounding_unit']}개 단위 반올림)"
+    tt = plan["totals"]
+    formula = (f"제안 수량 = 다음 달 예상 소모 + 안전 재고 − 월초 예상 재고 ({state['config']['rounding_unit']}개 단위 반올림). "
+               f"월초 예상 재고 = 현재 재고 − 이달 남은 소모(다음 달 1일까지 {tt.get('remainingDays', 0):g}일) + 입고 예정 발주")
 
     values = {
         "proposalId": job["proposalId"], "targetMonth": tm,

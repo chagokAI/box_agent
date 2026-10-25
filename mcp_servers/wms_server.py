@@ -314,5 +314,17 @@ def list_purchase_orders(warehouse_id: str, from_date: str, to_date: str) -> dic
     return {"items": items, "meta": _meta(warehouse_id)}
 
 
+@mcp.tool()
+def list_inbound_orders(warehouse_id: str) -> dict:
+    """아직 입고되지 않은 발주(승인·배송 중)의 규격별 수량: code, qty, poNo, status, deliveryDate,
+    proposalTargetMonth(그 발주를 만든 제안서의 대상 월, 제안과 무관하면 null). 다음 달 시작 재고에 더할 입고 예정"""
+    if not api.enabled():
+        return {"items": [], "meta": MOCK_META}
+    rows = _call(api.get, f"/warehouses/{warehouse_id}/inbound-orders")
+    return {"items": [{"boxSpecId": r["boxSpecId"], "code": r["code"], "qty": r["qty"], "poNo": r["poNo"],
+                       "status": r["status"], "deliveryDate": r["requestedDeliveryDate"],
+                       "proposalTargetMonth": r["proposalTargetMonth"]} for r in rows], "meta": _meta(warehouse_id)}
+
+
 if __name__ == "__main__":
     mcp.run()  # stdio

@@ -559,11 +559,14 @@ def check_spec_limit(products: list[dict], box_specs: list[dict], new_specs: lis
 def plan_order(products: list[dict], box_specs: list[dict], new_specs: list[dict], inventory: list[dict],
                forecast_shipments: int, days_in_month: int, safety_days: int = 7, rounding_unit: int = 100,
                margin_mm: int = 5, use_configured_safety: bool = True, allow_tilt: bool = False,
-               tilt_clearance_mm: int = 0, max_stock_months: float | None = None) -> dict:
+               tilt_clearance_mm: int = 0, max_stock_months: float | None = None, remaining_days: float = 0,
+               inbound: dict | None = None) -> dict:
     """실제 배정에서 출발해 신규 규격으로 옮겨 가는 출고만 바꿔 규격별 사용 비중을 구하고,
     다음 달 예상 소모 = 예측 출고 × 비중,
     안전 재고 = inventory의 safetyQty(규격에 설정된 값, use_configured_safety) 또는 일평균 소모 × safety_days,
-    제안 수량 = 예상 소모 + 안전 재고 − 현재 재고 (rounding_unit 단위 반올림, 0 이하면 0).
+    월초 예상 재고 = 현재 재고 − 다음 달 1일까지 남은 소모(remaining_days × 다음 달 일평균, 0 아래로는 안 내림) + 입고 예정(inbound{code: 수량}),
+    제안 수량 = 예상 소모 + 안전 재고 − 월초 예상 재고 (rounding_unit 단위 반올림, 0 이하면 0).
+    지금 재고를 다음 달 1일 재고로 쓰면 이번 달 남은 기간의 소모만큼 덜 주문하고, 미입고 발주를 빼면 중복 주문한다.
     max_stock_months 가 있으면 재고(현재 + 제안)가 예상 소모 × max_stock_months 를 넘는 규격에 overStock 표시(POL-04 §2)."""
     boxes = box_specs + new_specs
     sim = _simulate(products, boxes, margin_mm, allow_tilt, tilt_clearance_mm, {b["code"] for b in new_specs})
@@ -575,31 +578,37 @@ def plan_order(products: list[dict], box_specs: list[dict], new_specs: list[dict
     inv = {i["code"]: i["availableQty"] for i in inventory}
     cfg_safety = {i["code"]: i.get("safetyQty") for i in inventory} if use_configured_safety else {}
     new_codes = {b["code"] for b in new_specs}
+    inbound = inbound or {}
     rows = []
     for b in boxes:
         share = qty_by.get(b["code"], 0) / tot
         usage = round(forecast_shipments * share)
         cur = inv.get(b["code"], 0)
-        if usage == 0 and cur == 0:
+        if usage == 0 and cur == 0 and not inbound.get(b["code"]):
             continue
+        before = min(cur, round(usage / days_in_month * remaining_days))     # 다음 달 1일까지 쓸 양(있는 재고까지만)
+        start = cur - before + inbound.get(b["code"], 0)
         safety, src = round(usage / days_in_month * safety_days), "DAYS"
         if cfg_safety.get(b["code"]):
             safety, src = cfg_safety[b["code"]], "CONFIGURED"
-        need = usage + safety - cur
+        need = usage + safety - start
         qty = int(math.floor(need / rounding_unit + 0.5) * rounding_unit) if need > 0 else 0
         if need > 0 and qty == 0:
             qty = rounding_unit                              # 필요량이 있으면 최소 1단위
         rows.append({"code": b["code"], "label": b.get("label", b["code"]), "dims": b["dims"],
                      "isNew": b["code"] in new_codes, "sharePct": round(100 * share, 1), "currentQty": cur,
+                     "consumeBeforeQty": before, "inboundQty": inbound.get(b["code"], 0), "startQty": start,
                      "expectedUsage": usage, "safetyQty": safety, "safetySource": src, "proposedQty": qty,
                      "unitPrice": b["price"], "amount": qty * b["price"],
                      "stockCap": round(usage * max_stock_months) if max_stock_months else None,
-                     "overStock": bool(max_stock_months and usage and cur + qty > usage * max_stock_months)})
+                     "overStock": bool(max_stock_months and usage and start + qty > usage * max_stock_months)})
     rows.sort(key=lambda r: (not r["isNew"], -r["proposedQty"]))
     order_rows = [r for r in rows if r["proposedQty"] > 0]
     o = order_rows   # 표·합계는 주문이 필요한 규격 기준
     return {"rows": rows, "orderRows": o, "skipped": [r["code"] for r in rows if r["proposedQty"] == 0],
-            "totals": {"current": sum(r["currentQty"] for r in o), "usage": sum(r["expectedUsage"] for r in o),
+            "totals": {"current": sum(r["currentQty"] for r in o), "start": sum(r["startQty"] for r in o),
+                       "consumeBefore": sum(r["consumeBeforeQty"] for r in o), "inbound": sum(r["inboundQty"] for r in o),
+                       "remainingDays": remaining_days, "usage": sum(r["expectedUsage"] for r in o),
                        "safety": sum(r["safetyQty"] for r in o), "qty": sum(r["proposedQty"] for r in o),
                        "amount": sum(r["amount"] for r in o), "specCount": len(o)}}
 
