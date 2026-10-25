@@ -86,11 +86,11 @@ def _cos(a, b):
 
 
 # ---------------------------------------------------------------- 자료 읽기
-def load_policies() -> list[dict]:
-    """규정 md → 조항('## ') 단위 청크. 제목 줄의 (POL-xx) 가 문서 id"""
+def load_policies(values: dict | None = None) -> list[dict]:
+    """규정 md → 조항('## ') 단위 청크. 제목 줄의 (POL-xx) 가 문서 id. values = 채울 규칙값(없으면 전사 기본값)"""
     out = []
     for f in sorted((KDIR / "policies").glob("*.md")):
-        text = policy_rules.render(f.read_text(encoding="utf-8"))   # {규칙 키} → 규칙값 (문서 숫자 = 판단 숫자)
+        text = policy_rules.render(f.read_text(encoding="utf-8"), values)   # {규칙 키} → 규칙값 (문서 숫자 = 판단 숫자)
         title = text.splitlines()[0].lstrip("# ").strip()
         doc_id = (re.search(r"\((POL-\d+)\)", title) or re.search(r"(POL-\d+)", f.name)).group(1)
         for sec in re.split(r"\n(?=## )", text)[1:]:
@@ -174,6 +174,14 @@ def _search(kind: str, query: str, k: int, warehouse_id: str | None, min_score: 
     return [h for h in hits if h["score"] >= min_score]
 
 
+def _center_policies(hits: list[dict], warehouse_id: str | None) -> list[dict]:
+    """인덱스는 전사 기본값으로 채운 공통 본문 → 센터 덮어쓰기가 있으면 그 센터 값으로 다시 채운 본문으로 바꾼다"""
+    if not warehouse_id or not policy_rules.load_overrides(warehouse_id):
+        return hits
+    body = {d["sourceId"]: d["content"] for d in load_policies(policy_rules.effective(warehouse_id)["values"])}
+    return [{**h, "content": body.get(h["sourceId"], h["content"])} for h in hits]
+
+
 def _guarded_search(kind, query, k, warehouse_id, min_score):
     if not query or not query.strip():
         raise ToolError("검색어가 비어 있음 — 한국어 질문이나 키워드를 넣어 다시 호출")
@@ -188,10 +196,11 @@ def _guarded_search(kind, query, k, warehouse_id, min_score):
 
 # ---------------------------------------------------------------- Tools
 @mcp.tool()
-def search_policies(query: str, k: int = 3, min_score: float = 0.0) -> dict:
+def search_policies(query: str, k: int = 3, min_score: float = 0.0, warehouse_id: str | None = None) -> dict:
     """규정 문서에서 query(한국어 질문·키워드)와 관련된 조항을 찾는다. 결과의 sourceId(예: 'POL-02 §2')로 인용한다.
-    k 는 1~10. 원문 전체는 Resource policy://{docId} 로 읽는다."""
-    return {"items": _guarded_search("policy", query, k, None, min_score), "embedModel": embed_model()}
+    k 는 1~10. warehouse_id 를 주면 본문 숫자를 그 센터 규칙값으로 채운다. 원문 전체는 Resource policy://{docId} 로 읽는다."""
+    return {"items": _center_policies(_guarded_search("policy", query, k, None, min_score), warehouse_id),
+            "embedModel": embed_model()}
 
 
 @mcp.tool()
@@ -254,6 +263,15 @@ def policy_document(doc_id: str) -> str:
     if not f:
         raise ValueError(f"없는 규정: {doc_id}. 있는 규정: {', '.join(_policy_files())}")
     return policy_rules.render(f.read_text(encoding="utf-8"))
+
+
+@mcp.resource("policy://{doc_id}/center/{warehouse_id}", name="policy-center", mime_type="text/markdown",
+              description="센터 규칙값으로 채운 규정 원문 (예: policy://POL-02/center/<warehouseId>)")
+def policy_document_center(doc_id: str, warehouse_id: str) -> str:
+    f = _policy_files().get(doc_id.upper())
+    if not f:
+        raise ValueError(f"없는 규정: {doc_id}. 있는 규정: {', '.join(_policy_files())}")
+    return policy_rules.render(f.read_text(encoding="utf-8"), policy_rules.effective(warehouse_id)["values"])
 
 
 @mcp.resource("feedback://{case_id}", name="feedback-case", mime_type="application/json",

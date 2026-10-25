@@ -145,12 +145,14 @@ def rag_executor(node: str, names: list[str], warehouse_id: str, found: dict):
             if not uri.startswith(("policy://", "feedback://")):
                 raise ValueError("policy:// 또는 feedback:// 주소만 읽을 수 있음")
             harness.emit("TOOL_START", node=node, server="rag", tool="read_resource", uri=uri)
+            if uri.startswith("policy://") and "/" not in uri.removeprefix("policy://"):
+                uri += f"/center/{warehouse_id}"          # 규정 원문도 이 센터 규칙값으로 채운 것을 읽는다
             text = await HUB.read_resource("rag", uri)
             harness.emit("TOOL_END", node=node, server="rag", tool="read_resource", ok=True)
             return text
         if name not in names:
             raise ValueError(f"쓸 수 없는 도구: {name}. 쓸 수 있는 도구: {names}")
-        if name == "search_feedback_cases":
+        if name in ("search_feedback_cases", "search_policies"):      # 반려 기록은 이 센터 것, 규정 숫자는 이 센터 규칙값
             args = {**args, "warehouse_id": warehouse_id}
         res = await mcp_call(node, "rag", name, **args)
         for it in res["items"]:
