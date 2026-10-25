@@ -186,6 +186,8 @@ async def _restore(task_id: str) -> Task | None:
         return None
     task = TASKS[task_id] = Task(task_id, snap.values["job"], kind)
     task.status = "WAITING_APPROVAL"
+    # 진행 이벤트는 메모리에만 있어 사라졌다 → 화면이 초안을 다시 받도록 승인 대기 이벤트를 다시 넣는다
+    task.push("APPROVAL_REQUIRED", (hq if kind == "hq" else agent).approval_payload(snap.values))
     return task
 
 

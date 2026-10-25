@@ -288,11 +288,16 @@ def run_config(task_id: str, job: dict) -> dict:
             "metadata": {"month": job["month"], "jobId": job["jobId"]}}
 
 
+def approval_payload(out: dict) -> dict:
+    """승인 대기 이벤트 내용. 재시작 뒤 되살린 작업도 같은 내용을 다시 보낸다(agent_server._restore)"""
+    return dict(tool="set_center_overrides", month=out["job"]["month"], actions=out["actions"],
+                recommendations=out.get("recommendations") or [], reportPaths=out["report"]["paths"])
+
+
 async def run_until_pause(app, payload, cfg: dict) -> dict:
     out = await asyncio.wait_for(app.ainvoke(payload, cfg), harness.TASK_TIMEOUT_S)
     if "__interrupt__" in out:
-        harness.emit("APPROVAL_REQUIRED", tool="set_center_overrides", month=out["job"]["month"], actions=out["actions"],
-                     recommendations=out.get("recommendations") or [], reportPaths=out["report"]["paths"])
+        harness.emit("APPROVAL_REQUIRED", **approval_payload(out))
     return out
 
 

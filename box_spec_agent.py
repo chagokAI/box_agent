@@ -1391,6 +1391,15 @@ def build_graph(checkpointer=None):
     return g.compile(checkpointer=checkpointer or MemorySaver())
 
 
+def approval_payload(out: dict) -> dict:
+    """승인 대기 이벤트 내용. 재시작 뒤 되살린 작업도 같은 내용을 다시 보낸다(agent_server._restore)"""
+    return dict(tool="save_proposal", targetMonth=out["job"]["targetMonth"],
+                totalAmount=out["order_plan"]["totals"]["amount"], qty=out["order_plan"]["totals"]["qty"],
+                score=out["review"]["score"], newSpecs=[r["code"] for r in out["sim_results"] if r["selected"]],
+                sources=[{"sourceId": k, **v} for k, v in (out.get("sources") or {}).items()],
+                proposalMarkdown=out["proposal_md"], proposalHtml=out.get("proposal_html"))
+
+
 @asynccontextmanager
 async def open_checkpointer():
     """State·Memory: DB_URL 이 있으면 PostgreSQL(box_agent 스키마) checkpointer, 없으면 메모리.
@@ -1435,11 +1444,7 @@ async def run_until_pause(app, payload, cfg: dict) -> dict:
     """그래프를 다음 interrupt(승인 대기) 또는 끝까지 실행한다. 한 구간은 TASK_TIMEOUT_S 초 안에 끝나야 한다"""
     out = await asyncio.wait_for(app.ainvoke(payload, cfg), harness.TASK_TIMEOUT_S)
     if "__interrupt__" in out:
-        harness.emit("APPROVAL_REQUIRED", tool="save_proposal", targetMonth=out["job"]["targetMonth"],
-                     totalAmount=out["order_plan"]["totals"]["amount"], qty=out["order_plan"]["totals"]["qty"],
-                     score=out["review"]["score"], newSpecs=[r["code"] for r in out["sim_results"] if r["selected"]],
-                     sources=[{"sourceId": k, **v} for k, v in (out.get("sources") or {}).items()],
-                     proposalMarkdown=out["proposal_md"], proposalHtml=out.get("proposal_html"))
+        harness.emit("APPROVAL_REQUIRED", **approval_payload(out))
     return out
 
 
