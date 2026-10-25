@@ -14,6 +14,7 @@ COPY --chown=app:app agent_server.py box_spec_agent.py harness.py llm_writer.py 
 COPY --chown=app:app mcp_servers ./mcp_servers
 COPY --chown=app:app knowledge ./knowledge
 COPY --chown=app:app prompts ./prompts
+COPY --chown=app:app skills ./skills
 COPY --chown=app:app rules ./rules
 RUN mkdir -p /app/proposals && chown app:app /app/proposals
 USER app
