@@ -214,6 +214,21 @@ def n(v) -> str:
     return f"{v:,}"
 
 
+def kr(v: float) -> str:
+    """화면 문구용 큰 수: 1.2억 / 41만 / 3,500"""
+    return f"{v / 1e8:,.1f}억" if abs(v) >= 1e8 else f"{v / 1e4:,.0f}만" if abs(v) >= 1e4 else n(round(v))
+
+
+STEP_ORDER = ["load_context", "collect_data", "forecast_demand", "analyze_fit", "diagnose", "find_clusters",
+              "gen_candidates", "simulate", "plan_order", "write_proposal", "evaluate"]
+
+
+def progress(node: str, text: str) -> None:
+    """화면 진행 문구(PROGRESS): 단계가 끝날 때 결과를 한 문장으로. 내부 용어·코드 대신 담당자가 읽는 말로 쓴다"""
+    step = STEP_ORDER.index(node) + 1 if node in STEP_ORDER else None
+    harness.emit("PROGRESS", node=node, text=text, step=step, total=len(STEP_ORDER))
+
+
 def ym_label(ym: str) -> str:
     y, m = ym.split("-")
     return f"{y}년 {int(m)}월"
@@ -295,6 +310,7 @@ async def load_context(state: AgentState):
     past = [x for x in past["items"] if x.get("jobId") != job["jobId"]]
     log("load_context", f"과거 제안 {len(past)}건 (에이전트 {sum(x['source'] == 'box-agent' for x in past)}건, "
                         f"신규 규격 제안 {sum(len(x['newSpecs']) for x in past)}건)")
+    progress("load_context", f"{job.get('warehouseName') or '센터'}의 판단 규칙과 지난 제안 {len(past)}건을 확인했어요")
     return {"config": cfg, "rules": {k: rules[k] for k in ("version", "updatedAt", "overrides", "rows")},
             "review": {"score": 0, "feedback": [], "loop_count": 0}, "past_proposals": past,
             "approval": {"status": "PENDING"}, "messages": ["load_context"]}
@@ -339,6 +355,7 @@ async def collect_data(state: AgentState):
         raise RuntimeError("사용 가능한 박스 규격이 없음 (box_spec 치수·단가·is_active 확인)")
     if not prods["items"]:
         raise RuntimeError(f"분석 기간 {meta['from']}~{meta['to']} 출고가 있는 상품이 없음 (product 치수, item_event 확인)")
+    progress("collect_data", f"{basis} 출고 이력에서 상품 {len(prods['items'])}종, 박스 규격 {len(specs['items'])}종을 불러왔어요")
     return {"box_specs": specs["items"], "product_fits": prods["items"], "inventory": inv["items"],
             "shipment_history": hist["items"], "purchase_orders": pos["items"], "data_meta": meta,
             "messages": ["collect_data"]}
@@ -353,6 +370,9 @@ async def forecast_demand(state: AgentState):
     ly = n(r["sameMonthLastYear"]) + "건" if r["sameMonthLastYear"] else "없음"
     log("forecast_demand", f"{r['targetMonth']} 예상 출고 {n(r['forecast'])}건 (전년 동월 {ly}) "
                            f"정확도 {str(r['accuracy_pct']) + '%' if r['accuracy_pct'] is not None else '미산출'} [{r['method']}]")
+    yoy = (f" (전년 동월 대비 {(r['forecast'] / r['sameMonthLastYear'] - 1) * 100:+.0f}%)"
+           if r["sameMonthLastYear"] else "")
+    progress("forecast_demand", f"{int(r['targetMonth'][5:])}월 출고는 약 {kr(r['forecast'])}건으로 예상돼요{yoy}")
     return {"forecast": r, "messages": ["forecast_demand"]}
 
 
@@ -364,6 +384,9 @@ async def analyze_fit(state: AgentState):
                        tilt_clearance_mm=cfg["tilt_clearance_mm"])
     log("analyze_fit", f"전체 충진율 {r['overall_fill']}% | 저충진 SKU {r['low_fill_skus']}개, "
                        f"출고 비중 {r['low_fill_qty_share']}%")
+    progress("analyze_fit", f"지금 전체 충진율은 {r['overall_fill']}%예요. 상자에 빈 공간이 많은 상품이 {r['low_fill_skus']}종 있어요")
+    if r["unfit"]:
+        progress("analyze_fit", f"맞는 박스가 없어 포장을 기다린 상품이 {len(r['unfit'])}종 있어요")
     if r["unfit"]:
         log("analyze_fit", f"보유 규격에 안 들어가 포장 대기한 상품 {len(r['unfit'])}개 제외: "
                            f"{[u['code'] or u['productId'] for u in r['unfit']][:10]}")
@@ -386,6 +409,11 @@ async def diagnose(state: AgentState):
                        products=state["product_fits"], box_specs=state["box_specs"],
                        margin_mm=cfg["margin_mm"], low_fill_pct=cfg["low_fill_pct"])
     log("diagnose", f"원인별 출고 비중 {r['share_pct']}")
+    causes = {"SPEC_GAP": "맞는 크기 규격이 없어 큰 박스를 쓴", "SHAPE_MISMATCH": "모양이 맞지 않는 박스를 쓴"}
+    bad = {k: v for k, v in r["share_pct"].items() if k in causes}
+    if bad and sum(bad.values()):
+        top = max(bad, key=bad.get)
+        progress("diagnose", f"빈 공간 출고의 {100 * bad[top] / sum(bad.values()):.0f}%가 {causes[top]} 경우예요")
     return {"product_fits": r["products"], "diagnosis": r["share_pct"], "messages": ["diagnose"]}
 
 
@@ -411,6 +439,8 @@ async def find_clusters(state: AgentState):
     for c in r["clusters"] + sku["clusters"]:
         log("find_clusters", f"{c['clusterId']} {c.get('name') or cats(c)} SKU {c['skus']}개 비중 {c['share_pct']}% "
                              f"P50={c['p50']} 현재 {c['from_box']} 충진율 {c['avg_fill']}%")
+    progress("find_clusters", f"크기가 비슷한 상품을 {r['k']}개 묶음으로 나눴어요"
+                              + (f" (따로 볼 상품 {len(sku['clusters'])}종)" if sku["clusters"] else ""))
     return {"clusters": r["clusters"] + sku["clusters"], "messages": ["find_clusters"]}
 
 
@@ -491,6 +521,8 @@ async def gen_candidates(state: AgentState):
                                   f"(견적 {n(q['qty'])}개, 납기 {q['leadDate']})")
         else:
             notes.append(f"안 들어가는 상품 {len(u)}개용 맞춤 규격 {dims_s(dims)}: {q['note']}")
+    nc = sum(x["type"] == "CATALOG" for x in cands)
+    progress("gen_candidates", f"기성품 박스 카탈로그에서 후보 {nc}개, 맞춤 제작 견적 {len(cands) - nc}개를 찾았어요")
     return {"candidates": cands, "custom_unfit": unfit, "custom_notes": notes, "messages": ["gen_candidates"]}
 
 
@@ -550,6 +582,13 @@ async def simulate(state: AgentState):
         sel = [x["candId"] for x in r["results"] if x["selected"]]
     log("simulate", f"활성 규격 {lim['count_before']}종 + 신규 {len(new)}종 = {lim['count_proposed']}종 / 상한 {lim['max_active']}종"
                     + (f" → 신규 제외 {lim['drop']}" if lim["drop"] else ""))
+    best = max((x for x in r["results"] if x["selected"]), key=lambda x: x["target_fill_after"] - x["target_fill_before"], default=None)
+    if best:
+        progress("simulate", f"후보 {dims_s(best['dims'])}로 바꿔 보면 충진율이 {best['target_fill_before']:.0f}% → "
+                             f"{best['target_fill_after']:.0f}%로 올라가요")
+    saving = (r["combined"] or {}).get("monthly_saving") or 0
+    progress("simulate", (f"기준을 통과한 신규 규격 {len(sel)}종을 골랐어요" + (f" (월 약 {kr(saving)}원 절감)" if saving > 0 else ""))
+             if sel else "기준을 통과한 신규 규격이 없어 기존 규격만 보충해요")
     recent = None                        # 승인된 AI 제안으로 등록한 규격은 description 이 "catalog:boxking:<품번>" 또는 "custom:…"
     intro = [b for b in specs if str(b.get("description") or "").startswith(("catalog:", "custom:"))]
     if not sel and intro:                # 새 선정이 없으면 지난 제안으로 등록된 규격이 지금 내는 효과를 보여 준다
@@ -606,6 +645,7 @@ async def plan_order(state: AgentState):
     t = r["totals"]
     log("plan_order", f"{t['specCount']}개 규격 총 {n(t['qty'])}개, {n(t['amount'])}원 | 발주 제외: {r['skipped']} "
                       f"(* = 규격에 설정된 안전 재고)")
+    progress("plan_order", f"규격 {t['specCount']}종, 총 {kr(t['qty'])}개, 약 {kr(t['amount'])}원어치 주문이 필요해요")
     return {"order_plan": r, "order_quotes": order_quotes, "messages": ["plan_order"]}
 
 
@@ -1050,6 +1090,8 @@ async def write_proposal(state: AgentState):
     rv = {**rv, "loop_count": rv["loop_count"] + 1}
     log("write_proposal", f"draft v{rv['loop_count']} (표 {len(rows)}행, 확인 필요 {len(checks)}건, "
                           f"미기입 {r['missing']})")
+    progress("write_proposal", "근거 문장을 쓰고 관련 규정을 찾아 붙였어요" if rv["loop_count"] == 1
+             else f"검토 의견을 반영해 제안서를 다시 썼어요 ({rv['loop_count']}번째 초안)")
     client_view["sources"] = [{"sourceId": k, **v} for k, v in sources.items()]
     for i in range(0, len(r["markdown"]), 400):          # 화면 답변 영역(TOKEN). 초안마다 draft 번호로 구분
         harness.emit("TOKEN", draft=rv["loop_count"], text=r["markdown"][i:i + 400])
@@ -1133,6 +1175,7 @@ def evaluate(state: AgentState):
     score = max(score, 0)
     rv = {**state["review"], "score": score, "feedback": fb}
     log("evaluate", f"score={score}/100 loop={rv['loop_count']}/{state['config']['max_loops']} feedback={fb}")
+    progress("evaluate", f"제안서를 스스로 점검했어요 (100점 중 {score}점)")
     return {"review": rv, "messages": ["evaluate"]}
 
 
@@ -1235,6 +1278,8 @@ async def interpret_feedback(state: AgentState):
             log("interpret_feedback", f"LLM 해석 실패 → 키워드 규칙만 적용 ({str(e)[:150]})")
     log("interpret_feedback", f"기준값 변경 {[(c['key'], c['before'], c['after']) for c in changes]} "
                               f"미지원 {rj['unsupported']} 근거 {rj['sources']}")
+    harness.emit("PROGRESS", node="interpret_feedback", step=None, total=len(STEP_ORDER),
+                 text=f"\"{comment[:40]}\" 의견에 맞춰 " + ("기준을 바꿔 다시 계산하고 있어요" if changes else "다시 검토하고 있어요"))
     return {"config": cfg, "rejections": [*(state.get("rejections") or []), rj], "sources": sources,
             "messages": ["interpret_feedback"]}
 

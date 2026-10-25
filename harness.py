@@ -90,7 +90,7 @@ def record(kind: str, **data) -> None:
 
 
 def emit(event: str, **data) -> None:
-    """화면 진행 이벤트: TOKEN · TOOL_START · TOOL_END · APPROVAL_REQUIRED · DONE · FAILED"""
+    """화면 진행 이벤트: TOKEN · TOOL_START · TOOL_END · PROGRESS(단계 결과 문장) · APPROVAL_REQUIRED · DONE · FAILED"""
     tr = _trace.get()
     if not tr:
         return
