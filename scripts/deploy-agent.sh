@@ -44,6 +44,8 @@ def run(*args, input=None, timeout=60):
 
 def atomic(path, content):
     temporary = path.with_name(path.name + ".tmp")
+    temporary.touch(mode=0o600, exist_ok=True)
+    temporary.chmod(0o600)
     temporary.write_text(content)
     temporary.replace(path)
 
@@ -95,6 +97,15 @@ def main():
 
     containers = {service: container(service) for service in SERVICES}
     old_ids = {service: run("docker", "inspect", "--format", "{{.Image}}", cid) for service, cid in containers.items()}
+    database_env = {}
+    if KIND == "agent":
+        # 배포 서버의 기존 Compose 파일에도 새 business-mcp DB 연결을 전달한다. 비밀값은 출력하지 않는다.
+        env = dict(item.split("=", 1) for item in json.loads(run("docker", "inspect", "--format",
+                   "{{json .Config.Env}}", containers["agent"])) if "=" in item)
+        for key in ("DB_URL", "DB_USERNAME", "DB_PASSWORD"):
+            require(bool(env.get(key)), f"The running agent is missing {key}")
+            database_env[key] = env[key]
+
     require(all(re.fullmatch(r"sha256:[a-f0-9]{64}", value) for value in old_ids.values()), "Cannot determine running image IDs")
     previous = {service: f"{ROLLBACK_PREFIX}:{service}-{value[7:]}" for service, value in old_ids.items()}
 
@@ -183,7 +194,7 @@ def main():
     def write_override(images):
         services = {service: {"image": reference} for service, reference in images.items()}
         if KIND == "agent":
-            services["business-mcp"]["environment"] = {"CATALOG_DB": "/app/proposals/catalog.db"}
+            services["business-mcp"]["environment"] = {"CATALOG_DB": "/app/proposals/catalog.db", **database_env}
             services["rag-ingest"] = {"image": images["agent"]}
         write_json(override, {"services": services})
 

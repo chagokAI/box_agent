@@ -34,10 +34,12 @@ services:
       MCP_HOST: 0.0.0.0
       MCP_PORT: "9101"
       MCP_ALLOWED_HOSTS: business-mcp:*
+      <<: *db-env                                    # 센터 규칙 조정·변경 이력, 본부 리포트(box_agent 스키마)
       BUSINESS_API_URL: ${AGENT_BUSINESS_API_URL:-http://backend:8080}   # 로컬 CLI 용 BUSINESS_API_URL 과 분리
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?INTERNAL_API_TOKEN을 .env에 설정하세요 (backend 와 같은 값)}
       SHIPMENT_EVENT_STATUSES: ${SHIPMENT_EVENT_STATUSES:-}
       UPACKAGE_CACHE_DB: /app/proposals/custom_quotes.db   # /app 은 쓰기 불가 → 유팩 견적 캐시는 볼륨에
+      POLICY_RULE_OVERRIDES: /app/proposals/rule_overrides   # 센터별 규칙 조정(본부장 승인 조치)도 볼륨에 — 컨테이너를 다시 만들어도 유지
     volumes:
       - proposals:/app/proposals          # save_proposal 사본(json/md), 유팩 견적 캐시
     healthcheck: &tcp-health
@@ -57,6 +59,10 @@ services:
       MCP_ALLOWED_HOSTS: rag-mcp:*
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}            # 없으면 로컬 2-gram 검색(KNOWLEDGE_EMBED=local 로 적재 필요)
       KNOWLEDGE_EMBED: ${KNOWLEDGE_EMBED:-openai}
+      POLICY_RULE_OVERRIDES: /app/proposals/rule_overrides   # 규정 본문을 센터 규칙값으로 채울 때 읽는다(business-mcp 가 쓴다)
+      POLICY_DOC_OVERRIDES: /app/proposals/policy_docs        # 본부장이 지침서 화면에서 고친 규정 문서(전 센터 공통)
+    volumes:
+      - proposals:/app/proposals
     healthcheck: *tcp-health
 
   agent:

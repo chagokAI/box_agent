@@ -8,7 +8,8 @@ AI가 직접 하면 틀리기 쉬운 계산은 전부 여기서 한다. 상태�
 한 평면 기울임(Carver 조건, fits_tilted)을 적용한다. 기울임 배정은 fit="TILTED"로 표시하고 검토 대상으로 둔다.
 충진율은 기울임과 관계없이 부피비(상품 부피 / 박스 부피).
 
-운임: 경동 정기화물 운임표(templates/kyungdong_regular_freight.md, FREIGHT_TABLE)로 박스 1개씩 계산한다.
+운임: 택배 기본요금표(templates/parcel_basic_fee.md, 법제처 생활법령, PARCEL_TABLE)로 박스 1개씩 계산한다.
+  세 변 합 160cm·무게 30kg·최장변 100cm 를 넘는 박스만 경동 정기화물 운임표(templates/kyungdong_regular_freight.md, FREIGHT_TABLE).
   - 50,000㎤ 이하(소화물): 소화물 표준운임(부피)만. 무게 운임은 보지 않는다
   - 50,000㎤ 초과: 경동 부피요율표(㎤)와 무게 운임(중대형화물 표준운임 → 운임표 4, kg) 중 높은 금액
   부피 = 박스 내치수(외치수 없음), 무게 = 상품 실중량(weightG, 박스 무게 없음). 무게가 없으면 부피 운임만.
@@ -49,7 +50,22 @@ def _load_freight(path: Path) -> tuple[list, list]:
 
 VOL_TIERS, WT_TIERS = _load_freight(FREIGHT_TABLE)
 SMALL_PARCEL_CM3 = 50_000                 # 소화물 표준운임 표의 상한
-FREIGHT_MODE = os.getenv("FREIGHT_MODE", "split")   # split(기본) | max
+FREIGHT_MODE = os.getenv("FREIGHT_MODE", "split")   # split(기본) | max  — 정기화물 표 적용 방식
+PARCEL_TABLE = Path(os.getenv("PARCEL_TABLE", Path(__file__).resolve().parent / "templates" / "parcel_basic_fee.md"))
+
+
+def _load_parcel(path: Path) -> list:
+    """택배 기본요금표 md → [(무게 kg 상한, 세 변 합 cm 상한, 동일권 요금)] 등급 순"""
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) >= 4 and cells[1].isdigit() and cells[2].isdigit():
+            rows.append((int(cells[1]), int(cells[2]), int(cells[3])))
+    return rows
+
+
+PARCEL_TIERS = _load_parcel(PARCEL_TABLE)
+PARCEL_MAX_SIDE_CM = 100                  # 택배 최장변 한도
 
 
 # ---------------------------------------------------------------- 계산 함수
@@ -100,6 +116,17 @@ def _tier_fee(tiers, x):
 
 
 def ship_fee(box_dims, weight_g=None):
+    """박스 1개 운임. 기본은 택배 기본요금표(크기·무게 등급 중 높은 등급, 동일권).
+    세 변 합·무게·최장변이 택배 한도를 넘으면 경동 정기화물 운임으로 계산한다"""
+    side_cm, long_cm, kg = sum(box_dims) / 10, max(box_dims) / 10, (weight_g or 0) / 1000
+    if side_cm <= PARCEL_TIERS[-1][1] and kg <= PARCEL_TIERS[-1][0] and long_cm <= PARCEL_MAX_SIDE_CM:
+        size = next(i for i, t in enumerate(PARCEL_TIERS) if side_cm <= t[1])
+        wt = next(i for i, t in enumerate(PARCEL_TIERS) if kg <= t[0])
+        return PARCEL_TIERS[max(size, wt)][2]
+    return _freight_fee(box_dims, weight_g)
+
+
+def _freight_fee(box_dims, weight_g=None):
     """경동 정기화물 1건 운임: 소화물(50,000㎤ 이하)은 부피 운임만, 그 위는 부피·무게 운임 중 높은 금액"""
     cm3, fee = vol(box_dims) / 1000, _tier_fee(VOL_TIERS, vol(box_dims) / 1000)
     if not weight_g or (FREIGHT_MODE != "max" and cm3 <= SMALL_PARCEL_CM3):
@@ -107,16 +134,21 @@ def ship_fee(box_dims, weight_g=None):
     return max(fee, _tier_fee(WT_TIERS, weight_g / 1000))
 
 
-def best_fit(item_dims, boxes, margin, allow_tilt=False, tilt_clearance=0):
-    ok = [b for b in boxes if fits(item_dims, b["dims"], margin, allow_tilt, tilt_clearance)]
-    return min(ok, key=lambda b: vol(b["dims"])) if ok else None
+def _assign(p, boxes, new_codes, margin, allow_tilt=False, tilt_clearance=0):
+    """현재 박스 = 서버가 저장한 실제 배정(p["box"]). 새로 넣는 박스(new_codes) 중 들어가고 지금 박스보다 작은 것이 있으면
+    그 박스로 옮긴다(서버 매칭: 재고 있는 박스 중 들어가는 가장 작은 박스). 기존 박스끼리는 다시 배정하지 않는다."""
+    opts = [b for b in boxes if b["code"] in new_codes and fits(p["dims"], b["dims"], margin, allow_tilt, tilt_clearance)]
+    cur = next((b for b in boxes if b["code"] == p.get("box")), None)
+    if cur:
+        opts.append(cur)
+    return min(opts, key=lambda b: vol(b["dims"])) if opts else None
 
 
-def _simulate(products, boxes, margin, allow_tilt=False, tilt_clearance=0):
+def _simulate(products, boxes, margin, allow_tilt=False, tilt_clearance=0, new_codes=frozenset()):
     tot_q = item_v = box_v = box_cost = ship_cost = 0
     assign = {}
     for p in products:
-        b = best_fit(p["dims"], boxes, margin, allow_tilt, tilt_clearance)
+        b = _assign(p, boxes, new_codes, margin, allow_tilt, tilt_clearance)
         q = p["qty90d"]
         assign[p["productId"]] = b["code"]
         tot_q += q
@@ -142,6 +174,48 @@ def _load(products, assign, boxes):
     return {"shipments": round(q / 3), "item_m3": round(item_v / 3 / 1e9, 2), "box_m3": round(box_v / 3 / 1e9, 2),
             "box_krw": round(cost / 3), "freight_krw": round(freight / 3),
             "fill": round(100 * item_v / box_v, 1) if box_v else None}
+
+
+def _reg_fill(products, assign, boxes, limit_mm=500):
+    """포장 규제 대상(박스 세 변 합 > limit_mm, 포장 규칙 별표 1 비고 11) 출고의 출고량 가중 평균 충진율(%)"""
+    spec = {b["code"]: b for b in boxes}
+    q = f = 0
+    for p in products:
+        b = spec.get(assign.get(p["productId"]))
+        if b and sum(b["dims"]) > limit_mm:
+            q += p["qty90d"]
+            f += p["qty90d"] * 100 * vol(p["dims"]) / vol(b["dims"])
+    return round(f / q, 1) if q else 0.0
+
+
+def _by_product(rows):
+    """상품 × 박스 행(품절·수동 매칭으로 한 상품이 여러 박스에 나감)을 상품 1행으로 합친다.
+    출고량 합계, 충진율 출고량 가중 평균, 박스·원인은 출고량이 가장 많은 행 기준. productId = 상품 ID(pid)"""
+    out = {}
+    for p in rows:
+        pid = p.get("pid") or p["productId"]
+        m = out.get(pid)
+        if m is None:
+            out[pid] = {**p, "productId": pid, "_top": p["qty90d"], "_fq": p.get("fill", 0) * p["qty90d"]}
+            continue
+        m["_fq"] += p.get("fill", 0) * p["qty90d"]
+        m["qty90d"] += p["qty90d"]
+        if p["qty90d"] > m["_top"]:
+            m.update({k: p[k] for k in ("box", "cause", "slack", "fit") if k in p}, _top=p["qty90d"])
+    for m in out.values():
+        m["fill"] = round(m.pop("_fq") / m["qty90d"], 2) if m["qty90d"] else m.get("fill")
+        m.pop("_top")
+    return list(out.values())
+
+
+def _wpct(arr, w, q):
+    """출고량 가중 백분위(축별): 많이 나가는 상품이 박스 크기를 정한다"""
+    out = []
+    for col in np.asarray(arr, float).T:
+        o = np.argsort(col)
+        cw = np.cumsum(np.asarray(w, float)[o])
+        out.append(col[o][min(np.searchsorted(cw, q / 100 * cw[-1]), len(col) - 1)])
+    return np.round(out).astype(int).tolist()
 
 
 def _kmeans(x, k, w=None, iters=30, seeds=10):
@@ -183,17 +257,25 @@ def _silhouette(x, lab, w):
 @mcp.tool()
 def analyze_fill_rate(products: list[dict], box_specs: list[dict], margin_mm: int = 5,
                       low_fill_pct: float = 45, allow_tilt: bool = False, tilt_clearance_mm: int = 0) -> dict:
-    """상품마다 들어가는 가장 작은 박스(6방향 회전, allow_tilt면 기울임 포함)를 배정하고 충진율·축별 여유를 계산한다.
-    어떤 박스에도 안 들어가는 상품은 products에서 빼고 unfit으로 돌려준다."""
-    out, unfit = [], []
+    """서버가 저장한 실제 배정(p["box"])으로 상품 × 박스 행의 충진율(서버 값, 없으면 치수로)·축별 여유를 계산한다.
+    쓸 박스가 없어 대기한 행(box=None)은 보유 규격에 들어가면 stockout(품절로 대기), 안 들어가면 unfit,
+    지금 활성 규격에 없는 박스로 나간 행은 inactive 로 따로 돌려준다."""
+    spec = {b["code"]: b for b in box_specs}
+    out, unfit, stockout, inactive = [], [], [], []
     for p in products:
-        b = best_fit(p["dims"], box_specs, margin_mm, allow_tilt, tilt_clearance_mm)
+        if p.get("box") is None:
+            row = {"productId": p["productId"], "code": p.get("code"), "dims": p["dims"], "qty90d": p["qty90d"],
+                   "weightG": p.get("weightG")}
+            fit = _assign(p, box_specs, set(spec), margin_mm, allow_tilt, tilt_clearance_mm)
+            (stockout if fit else unfit).append({**row, "box": fit["code"]} if fit else row)
+            continue
+        b = spec.get(p["box"])
         if b is None:
-            unfit.append({"productId": p["productId"], "code": p.get("code"), "dims": p["dims"], "qty90d": p["qty90d"],
-                          "weightG": p.get("weightG")})
+            inactive.append({"productId": p["productId"], "code": p.get("code"), "box": p["box"], "qty90d": p["qty90d"]})
             continue
         slack = [max(0, bd - pd) for bd, pd in zip(sdims(b["dims"]), sdims(p["dims"]))]
-        out.append({**p, "box": b["code"], "fill": round(100 * vol(p["dims"]) / vol(b["dims"]), 2),   # 서버와 같은 둘째 자리
+        fill = p.get("serverFill")
+        out.append({**p, "fill": round(fill if fill is not None else 100 * vol(p["dims"]) / vol(b["dims"]), 2),
                     "slack": slack, "fit": fit_source(p["dims"], b["dims"], margin_mm, allow_tilt, tilt_clearance_mm)})
     base = _simulate(out, box_specs, margin_mm, allow_tilt, tilt_clearance_mm)
     low = [p for p in out if p["fill"] < low_fill_pct]
@@ -201,6 +283,7 @@ def analyze_fill_rate(products: list[dict], box_specs: list[dict], margin_mm: in
                "qty90d": p["qty90d"]} for p in out if p["fit"] == "TILTED"]
     return {"products": out, "overall_fill": round(base["fill"], 1), "low_fill_skus": len(low),
             "low_fill_qty_share": round(100 * sum(p["qty90d"] for p in low) / base["qty"], 1), "unfit": unfit,
+            "stockout": stockout, "inactive": inactive,
             "tilted": tilted}
 
 
@@ -236,6 +319,7 @@ def diagnose_inefficiency(products: list[dict], box_specs: list[dict], margin_mm
 def find_misfit_clusters(products: list[dict], max_clusters: int = 5, min_clusters: int = 2) -> dict:
     """저효율 상품을 정렬 치수(로그, 형태가 반영되게)·출고량 가중 k-means 로 묶는다.
     군집 수는 min_clusters~max_clusters 중 가중 실루엣 점수가 가장 높은 값. 출고량 비중이 큰 '애매한 WDH' 구간을 반환한다."""
+    products = _by_product(products)
     mis = [p for p in products if p.get("cause", "OK") != "OK"]
     if not mis:
         return {"clusters": [], "k": 0}
@@ -261,8 +345,8 @@ def find_misfit_clusters(products: list[dict], max_clusters: int = 5, min_cluste
             by_cat[p["category"]] = by_cat.get(p["category"], 0) + p["qty90d"]
         clusters.append({
             "clusterId": "", "skus": len(mem), "qty90d": q, "share_pct": round(100 * q / tot, 1),
-            "p50": np.percentile(arr, 50, 0).round().astype(int).tolist(),
-            "p90": np.percentile(arr, 90, 0).round().astype(int).tolist(),
+            "p50": _wpct(arr, [p["qty90d"] for p in mem], 50),
+            "p90": _wpct(arr, [p["qty90d"] for p in mem], 90),
             "from_box": max(by_box, key=by_box.get),
             "avg_fill": round(sum(p["fill"] * p["qty90d"] for p in mem) / q, 1),
             "categories": sorted(by_cat, key=lambda k: -by_cat[k]),          # 출고량 많은 분류부터
@@ -276,16 +360,19 @@ def find_misfit_clusters(products: list[dict], max_clusters: int = 5, min_cluste
 
 @mcp.tool()
 def find_sku_candidates(products: list[dict], max_fill_pct: float = 20, min_share_pct: float = 1.0,
-                        limit: int = 5) -> dict:
+                        limit: int = 5, regulated_boxes: list[str] | None = None, id_prefix: str = "S") -> dict:
     """군집과 별도로 볼 단일 품목: 충진율 max_fill_pct 미만이고 출고 비중 min_share_pct 이상인 상품을
-    낭비 부피(박스 부피 − 상품 부피) × 출고량이 큰 순으로 limit 개. 군집과 같은 모양(SKU 1개짜리)으로 돌려준다."""
+    낭비 부피(박스 부피 − 상품 부피) × 출고량이 큰 순으로 limit 개. 군집과 같은 모양(SKU 1개짜리)으로 돌려준다.
+    regulated_boxes 를 주면 그 박스(포장 규제 대상)에 담기는 상품만 본다(ESG 우선 모드)."""
+    products = _by_product(products)
     tot = sum(p["qty90d"] for p in products) or 1
-    pick = [p for p in products if p["fill"] < max_fill_pct and 100 * p["qty90d"] / tot >= min_share_pct]
+    pick = [p for p in products if p["fill"] < max_fill_pct and 100 * p["qty90d"] / tot >= min_share_pct
+            and (regulated_boxes is None or p["box"] in regulated_boxes)]
     pick.sort(key=lambda p: -(vol(p["dims"]) * (100 / max(p["fill"], 0.1) - 1) * p["qty90d"]))
     out = []
     for i, p in enumerate(pick[:limit], 1):
         d = sdims(p["dims"])
-        out.append({"clusterId": f"S{i}", "scope": "SKU", "skus": 1, "qty90d": p["qty90d"],
+        out.append({"clusterId": f"{id_prefix}{i}", "scope": "SKU", "skus": 1, "qty90d": p["qty90d"],
                     "share_pct": round(100 * p["qty90d"] / tot, 1), "p50": d, "p90": d, "from_box": p["box"],
                     "avg_fill": p["fill"], "categories": [p.get("category") or "미분류"], "productIds": [p["productId"]],
                     "name": p.get("name") or p.get("code")})
@@ -302,6 +389,7 @@ def ideal_box_dims(p90_dims: list[int], margin_mm: int = 5, round_to_mm: int = 5
 def coverage(products: list[dict], box_dims: list[int], margin_mm: int = 5, allow_tilt: bool = False,
              tilt_clearance_mm: int = 0) -> dict:
     """주어진 박스에 들어가는 상품의 출고량 비율(%)."""
+    products = _by_product(products)
     tot = sum(p["qty90d"] for p in products)
     ok = sum(p["qty90d"] for p in products if fits(p["dims"], box_dims, margin_mm, allow_tilt, tilt_clearance_mm))
     return {"coverage_pct": round(100 * ok / tot, 1) if tot else 0.0}
@@ -309,17 +397,22 @@ def coverage(products: list[dict], box_dims: list[int], margin_mm: int = 5, allo
 
 @mcp.tool()
 def simulate_boxset(products: list[dict], box_specs: list[dict], candidates: list[dict], gate: dict,
-                    margin_mm: int = 5, allow_tilt: bool = False, tilt_clearance_mm: int = 0) -> dict:
+                    margin_mm: int = 5, allow_tilt: bool = False, tilt_clearance_mm: int = 0,
+                    fill_mode: dict | None = None) -> dict:
     """후보 박스를 하나씩 추가해 과거 출고를 재배정하고 충진율 변화·월 절감·회수기간·게이트 판정을 계산한다.
     게이트를 통과한 후보 중 군집당 월 절감액이 가장 큰 1개를 선정한다(겹치면 추가 절감 기준, marginal_saving).
     moved = 그 후보로 옮겨 가는 상품별 이전 박스·충진율 전후(anchor = 후보를 만든 군집·단일 품목의 상품).
     combined.monthly_saving = 선정 규격을 모두 넣었을 때의 월 절감 — 제안서의 예상 이익은 이 값 하나만 쓴다.
-    combined.load = 선정 규격을 모두 넣었을 때 배정이 바뀌는 출고의 도입 전/후 월 적재량(_load)."""
+    combined.load = 선정 규격을 모두 넣었을 때 배정이 바뀌는 출고의 도입 전/후 월 적재량(_load).
+    reg_fill_* = 포장 규제 대상(세 변 합 50cm 초과) 출고의 센터 전체 충진율.
+    fill_mode = {"min_gain": %p, "max_extra_cost": 원} 이면 ESG 우선 모드: 절감 게이트를 못 넘어도 규제 대상 충진율을
+    min_gain 이상 올리고 월 추가 비용(누적)이 max_extra_cost 안이면 선정(pass_by = "FILL"). 절감 통과 후보를 먼저 고른다."""
     base = _simulate(products, box_specs, margin_mm, allow_tilt, tilt_clearance_mm)
+    base_reg = _reg_fill(products, base["assign"], box_specs)
     res = []
     for c in candidates:
         new = _simulate(products, box_specs + [{"code": c["code"], "dims": c["dims"], "price": c["price"]}],
-                        margin_mm, allow_tilt, tilt_clearance_mm)
+                        margin_mm, allow_tilt, tilt_clearance_mm, {c["code"]})
         moved = [p for p in products if new["assign"][p["productId"]] == c["code"]]
         mq = sum(p["qty90d"] for p in moved)
         if mq == 0:
@@ -338,9 +431,12 @@ def simulate_boxset(products: list[dict], box_specs: list[dict], candidates: lis
             checks.pop("share_pct")
         if "payback_m" in g:
             checks["payback_m"] = payback is not None and payback <= g["payback_m"]
+        reg_a = _reg_fill(products, new["assign"], box_specs + [{"code": c["code"], "dims": c["dims"]}])
+        pass_by = "SAVING" if all(checks.values()) else (
+            "FILL" if fill_mode and reg_a - base_reg >= fill_mode["min_gain"] and monthly >= -fill_mode["max_extra_cost"] else None)
         anchor = set(c.get("productIds") or [])
         moved_rows = sorted(({"productId": p["productId"], "name": p.get("name") or p.get("code"), "qty90d": p["qty90d"],
-                              "from": base["assign"][p["productId"]], "anchor": p["productId"] in anchor,
+                              "from": base["assign"][p["productId"]], "anchor": (p.get("pid") or p["productId"]) in anchor,
                               "fill_before": round(100 * vol(p["dims"]) / vol(spec[base["assign"][p["productId"]]]["dims"]), 1),
                               "fill_after": round(100 * vol(p["dims"]) / vol(c["dims"]), 1)} for p in moved),
                             key=lambda r: (not r["anchor"], -r["qty90d"]))
@@ -351,15 +447,17 @@ def simulate_boxset(products: list[dict], box_specs: list[dict], candidates: lis
                     "overall_fill_before": round(base["fill"], 1), "overall_fill_after": round(new["fill"], 1),
                     "monthly_saving": monthly, "init_cost": c["init_cost"], "payback_m": payback,
                     "replaces": sorted({base["assign"][p["productId"]] for p in moved}),
-                    "checks": checks, "pass": all(checks.values()), "selected": False})
+                    "reg_fill_before": base_reg, "reg_fill_after": reg_a,
+                    "checks": checks, "pass": pass_by is not None, "pass_by": pass_by, "selected": False})
     # 군집·단일 후보는 같은 출고를 두고 겹칠 수 있다 → 절감이 큰 순으로 넣으며 '이미 고른 것 위에 더 줄어드는 만큼'으로 다시 판정
     chosen, cur = [], base
     cand_by = {c["candId"]: c for c in candidates}
-    for r in sorted([r for r in res if r["pass"]], key=lambda r: -r["monthly_saving"]):
+    for r in sorted([r for r in res if r["pass_by"] == "SAVING"], key=lambda r: -r["monthly_saving"]):
         if any(x["cluster"] == r["cluster"] for x in chosen):
             continue                                   # 군집(단일)당 1개
         trial = _simulate(products, box_specs + [{"code": x["code"], "dims": x["dims"], "price": x["price"]}
-                                                 for x in chosen + [r]], margin_mm, allow_tilt, tilt_clearance_mm)
+                                                 for x in chosen + [r]], margin_mm, allow_tilt, tilt_clearance_mm,
+                          {x["code"] for x in chosen + [r]})
         marginal = round(((cur["box_cost"] + cur["ship_cost"]) - (trial["box_cost"] + trial["ship_cost"])) / 3)
         g = gate[r["type"]]
         payback_ok = "payback_m" not in g or (marginal > 0 and cand_by[r["candId"]]["init_cost"] / marginal <= g["payback_m"])
@@ -368,14 +466,29 @@ def simulate_boxset(products: list[dict], box_specs: list[dict], candidates: lis
             r["selected"] = True
             chosen.append(r)
             cur = trial
+    if fill_mode:                                      # ESG 우선 모드: 규제 대상 충진율을 가장 많이 올리는 후보부터, 추가 비용 한도 안에서
+        extra = 0
+        for r in sorted([r for r in res if r["pass_by"] == "FILL"], key=lambda r: -(r["reg_fill_after"] - r["reg_fill_before"])):
+            if any(x["cluster"] == r["cluster"] for x in chosen):
+                continue
+            boxes = box_specs + [{"code": x["code"], "dims": x["dims"], "price": x["price"]} for x in chosen + [r]]
+            trial = _simulate(products, boxes, margin_mm, allow_tilt, tilt_clearance_mm, {x["code"] for x in chosen + [r]})
+            marginal = round(((cur["box_cost"] + cur["ship_cost"]) - (trial["box_cost"] + trial["ship_cost"])) / 3)
+            gain = _reg_fill(products, trial["assign"], boxes) - _reg_fill(products, cur["assign"], boxes)
+            r["marginal_saving"], r["marginal_reg_gain"] = marginal, round(gain, 1)
+            if gain >= fill_mode["min_gain"] and extra + max(0, -marginal) <= fill_mode["max_extra_cost"]:
+                r["selected"] = True
+                chosen.append(r)
+                cur, extra = trial, extra + max(0, -marginal)
     sel = [r for r in res if r["selected"]]
     combined = None
     if sel:
         comb = _simulate(products, box_specs + [{"code": r["code"], "dims": r["dims"], "price": r["price"]}
-                                                for r in sel], margin_mm, allow_tilt, tilt_clearance_mm)
+                                                for r in sel], margin_mm, allow_tilt, tilt_clearance_mm, {r["code"] for r in sel})
         boxes = box_specs + [{"code": r["code"], "dims": r["dims"], "price": r["price"]} for r in sel]
         moved = [p for p in products if comb["assign"][p["productId"]] != base["assign"][p["productId"]]]
         combined = {"overall_fill_before": round(base["fill"], 1), "overall_fill_after": round(comb["fill"], 1),
+                    "reg_fill_before": base_reg, "reg_fill_after": _reg_fill(products, comb["assign"], boxes),
                     "monthly_saving": round(((base["box_cost"] + base["ship_cost"])
                                              - (comb["box_cost"] + comb["ship_cost"])) / 3),
                     "load": {"before": _load(moved, base["assign"], boxes), "after": _load(moved, comb["assign"], boxes),
@@ -387,22 +500,35 @@ def simulate_boxset(products: list[dict], box_specs: list[dict], candidates: lis
 def compare_boxsets(products: list[dict], before_specs: list[dict], after_specs: list[dict], margin_mm: int = 5,
                     allow_tilt: bool = False, tilt_clearance_mm: int = 0) -> dict:
     """박스 세트 두 개(before → after)로 같은 출고를 배정해 비교한다. simulate_boxset 의 combined 와 같은 모양.
+    출발은 실제 배정. after 에만 있는 박스는 새로 넣는 박스로 보고, before 에 없는 박스로 나간 출고(최근 도입)는
+    그 박스가 없었다면 서버가 골랐을 박스(before 중 들어가는 가장 작은 박스)로 가정한다.
     load = 두 세트 모두에 들어가는데 배정이 바뀌는 출고의 월 적재량(전/후),
     newly_fit = before 에는 안 들어가고 after 에만 들어가는 출고의 월 적재량(after 기준, 맞춤 규격 효과용)."""
-    def fit_all(specs):
-        return [p for p in products if best_fit(p["dims"], specs, margin_mm, allow_tilt, tilt_clearance_mm)]
-    both = [p for p in fit_all(after_specs) if best_fit(p["dims"], before_specs, margin_mm, allow_tilt, tilt_clearance_mm)]
-    only_after = [p for p in fit_all(after_specs) if p not in both]
-    base = _simulate(both, before_specs, margin_mm, allow_tilt, tilt_clearance_mm) if both else None
-    new = _simulate(both + only_after, after_specs, margin_mm, allow_tilt, tilt_clearance_mm)
+    added = {b["code"] for b in after_specs} - {b["code"] for b in before_specs}
+    before = {b["code"] for b in before_specs}
+    both, base_rows = [], []
+    for p in products:
+        if p.get("box") is None:
+            continue
+        if p["box"] in before:
+            both.append(p)
+            base_rows.append(p)
+        elif (alt := _assign({**p, "box": None}, before_specs, before, margin_mm, allow_tilt, tilt_clearance_mm)):
+            both.append(p)                  # 지금 박스가 before 에 없음(최근 도입) → 없었다면 서버가 골랐을 박스로 가정
+            base_rows.append({**p, "box": alt["code"]})
+    only_after = [p for p in products if p.get("box") is None
+                  and _assign(p, after_specs, added, margin_mm, allow_tilt, tilt_clearance_mm)]
+    sim = lambda rows: _simulate(rows, after_specs, margin_mm, allow_tilt, tilt_clearance_mm, added)
+    base = _simulate(base_rows, before_specs, margin_mm, allow_tilt, tilt_clearance_mm) if both else None
+    new = sim(both + only_after)
     moved = [p for p in both if base and new["assign"][p["productId"]] != base["assign"][p["productId"]]]
     boxes = {b["code"]: b for b in before_specs + after_specs}.values()
     boxes = list(boxes)
-    after_both = _simulate(both, after_specs, margin_mm, allow_tilt, tilt_clearance_mm) if both else None
+    after_both = sim(both) if both else None
     return {"monthly_saving": round(((base["box_cost"] + base["ship_cost"]) - (after_both["box_cost"] + after_both["ship_cost"])) / 3)
             if base else 0,
             "overall_fill_before": round(base["fill"], 1) if base else None,
-            "overall_fill_after": round(_simulate(both, after_specs, margin_mm, allow_tilt, tilt_clearance_mm)["fill"], 1)
+            "overall_fill_after": round(after_both["fill"], 1)
             if both else None,
             "load": {"before": _load(moved, base["assign"], boxes), "after": _load(moved, new["assign"], boxes),
                      "fromBoxes": sorted({base["assign"][p["productId"]] for p in moved})} if moved else None,
@@ -411,16 +537,36 @@ def compare_boxsets(products: list[dict], before_specs: list[dict], after_specs:
 
 
 @mcp.tool()
+def check_spec_limit(products: list[dict], box_specs: list[dict], new_specs: list[dict], max_active: int,
+                     margin_mm: int = 5, allow_tilt: bool = False, tilt_clearance_mm: int = 0) -> dict:
+    """활성 규격 수 상한(POL-02 §3). 기존 규격은 비활성화하지 않는다(새 상품·남은 재고 대비).
+    기존 + 신규가 상한을 넘으면 신규 규격을 우선순위(priority, 큰 값이 먼저 유지) 낮은 순으로 제외 후보로 돌려준다.
+    share_pct = 기존 + 신규로 출고를 다시 배정했을 때 규격별 사용 비중(참고)."""
+    boxes = box_specs + new_specs
+    sim = _simulate(products, boxes, margin_mm, allow_tilt, tilt_clearance_mm, {b["code"] for b in new_specs})
+    q = {}
+    for p in products:
+        q[sim["assign"][p["productId"]]] = q.get(sim["assign"][p["productId"]], 0) + p["qty90d"]
+    tot = sum(q.values()) or 1
+    over = len(boxes) - max_active
+    drop = [b["code"] for b in sorted(new_specs, key=lambda b: b.get("priority", 0))[:max(over, 0)]]
+    return {"count_before": len(box_specs), "count_proposed": len(boxes), "count_after": len(boxes) - len(drop),
+            "max_active": max_active, "over": max(over, 0), "drop": drop,
+            "share_pct": {b["code"]: round(100 * q.get(b["code"], 0) / tot, 1) for b in boxes}}
+
+
+@mcp.tool()
 def plan_order(products: list[dict], box_specs: list[dict], new_specs: list[dict], inventory: list[dict],
                forecast_shipments: int, days_in_month: int, safety_days: int = 7, rounding_unit: int = 100,
                margin_mm: int = 5, use_configured_safety: bool = True, allow_tilt: bool = False,
-               tilt_clearance_mm: int = 0) -> dict:
-    """신규 규격을 포함한 박스 세트로 상품을 재배정해 규격별 사용 비중을 구하고,
+               tilt_clearance_mm: int = 0, max_stock_months: float | None = None) -> dict:
+    """실제 배정에서 출발해 신규 규격으로 옮겨 가는 출고만 바꿔 규격별 사용 비중을 구하고,
     다음 달 예상 소모 = 예측 출고 × 비중,
     안전 재고 = inventory의 safetyQty(규격에 설정된 값, use_configured_safety) 또는 일평균 소모 × safety_days,
-    제안 수량 = 예상 소모 + 안전 재고 − 현재 재고 (rounding_unit 단위 반올림, 0 이하면 0)."""
+    제안 수량 = 예상 소모 + 안전 재고 − 현재 재고 (rounding_unit 단위 반올림, 0 이하면 0).
+    max_stock_months 가 있으면 재고(현재 + 제안)가 예상 소모 × max_stock_months 를 넘는 규격에 overStock 표시(POL-04 §2)."""
     boxes = box_specs + new_specs
-    sim = _simulate(products, boxes, margin_mm, allow_tilt, tilt_clearance_mm)
+    sim = _simulate(products, boxes, margin_mm, allow_tilt, tilt_clearance_mm, {b["code"] for b in new_specs})
     qty_by = {}
     for p in products:
         c = sim["assign"][p["productId"]]
@@ -446,7 +592,9 @@ def plan_order(products: list[dict], box_specs: list[dict], new_specs: list[dict
         rows.append({"code": b["code"], "label": b.get("label", b["code"]), "dims": b["dims"],
                      "isNew": b["code"] in new_codes, "sharePct": round(100 * share, 1), "currentQty": cur,
                      "expectedUsage": usage, "safetyQty": safety, "safetySource": src, "proposedQty": qty,
-                     "unitPrice": b["price"], "amount": qty * b["price"]})
+                     "unitPrice": b["price"], "amount": qty * b["price"],
+                     "stockCap": round(usage * max_stock_months) if max_stock_months else None,
+                     "overStock": bool(max_stock_months and usage and cur + qty > usage * max_stock_months)})
     rows.sort(key=lambda r: (not r["isNew"], -r["proposedQty"]))
     order_rows = [r for r in rows if r["proposedQty"] > 0]
     o = order_rows   # 표·합계는 주문이 필요한 규격 기준

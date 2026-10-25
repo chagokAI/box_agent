@@ -1,0 +1,104 @@
+# 박스 주문 제안 규칙 — 판단에 쓰는 숫자의 단일 원본
+#
+# - 에이전트는 business-mcp get_policy_rules 로 이 값(+ 센터별 덮어쓰기 rules/overrides/<warehouseId>.yaml)을 읽어 판단한다.
+#   코드에 숫자를 직접 적지 않는다.
+# - 규정 문서(knowledge/policies/*.md)의 {key|형식} 자리는 rag 적재 때 이 값으로 채워진다 → 문서 숫자 = 판단 숫자.
+# - 나중에 DB 로 옮길 때 rules 한 항목 = policy_rule 테이블 한 행, overrides = policy_rule_override.
+#
+# 필드: key(설정 경로, 고유) value type(int|float|bool|int_list) unit range([최소, 최대])
+#       scope(center = 센터별 덮어쓰기 허용 / global = 전사 고정) feedback(반려 의견으로 바꿀 수 있는지)
+#       source(근거 조항) label(화면·문서 표시 이름)
+version: 3
+updated_at: 2026-10-23
+rules:
+  # ── 박스 수용 판정 (POL-01) ─────────────────────────────────────────────
+  - {key: margin_mm, value: 0, type: int, unit: mm, range: [0, 20], scope: global, feedback: false,
+     source: POL-01 §4, label: 판정 여유(서버 매칭 정책과 같게)}
+
+  # ── 신규 규격 후보 탐색 ─────────────────────────────────────────────────
+  - {key: low_fill_pct, value: 45, type: float, unit: "%", range: [10, 80], scope: center, feedback: false,
+     source: POL-02 §2, label: 저충진 상품 기준(군집 대상)}
+  - {key: max_clusters, value: 5, type: int, unit: 개, range: [2, 10], scope: center, feedback: false,
+     source: POL-02 §2, label: 최대 군집 수}
+  - {key: sku_max_fill_pct, value: 20, type: float, unit: "%", range: [5, 60], scope: center, feedback: false,
+     source: POL-02 §2, label: 단일 품목 후보 충진율 기준}
+  - {key: sku_min_share_pct, value: 1.0, type: float, unit: "%", range: [0.1, 10], scope: center, feedback: false,
+     source: POL-02 §2, label: 단일 품목 후보 출고 비중 기준}
+  - {key: sku_limit, value: 5, type: int, unit: 개, range: [0, 20], scope: center, feedback: false,
+     source: POL-02 §2, label: 단일 품목 후보 최대 개수}
+  - {key: coverage_pct, value: 80, type: float, unit: "%", range: [50, 100], scope: center, feedback: false,
+     source: POL-02 §2, label: 후보 박스가 담아야 할 군집 출고 비율}
+  - {key: cluster_vol_cap_x, value: 2, type: float, unit: 배, range: [1, 5], scope: global, feedback: false,
+     source: POL-02 §2, label: 군집 후보 부피 상한(이상 치수 대비)}
+
+  # ── 도입 게이트 (POL-02 §2, §6) ─────────────────────────────────────────
+  - {key: gate.CATALOG.monthly_saving, value: 300000, type: int, unit: 원, range: [0, 5000000], scope: center, feedback: true, hq_tune: true,
+     source: POL-02 §2, label: 기성품 신규 규격 월 절감액 기준}
+  - {key: gate.CATALOG.share_pct, value: 3, type: float, unit: "%", range: [0, 50], scope: center, feedback: true,
+     source: POL-02 §2, label: 기성품 신규 규격 대상 출고 비중 기준}
+  - {key: gate.CATALOG.delta_fill, value: 2, type: float, unit: "%p", range: [0, 50], scope: center, feedback: true, hq_tune: true,
+     source: POL-02 §2, label: 기성품 신규 규격 충진율 개선 기준}
+  - {key: gate.CUSTOM.monthly_saving, value: 300000, type: int, unit: 원, range: [0, 5000000], scope: center, feedback: true,
+     source: POL-02 §6, label: 맞춤 규격 월 절감액 기준}
+  - {key: gate.CUSTOM.share_pct, value: 3, type: float, unit: "%", range: [0, 50], scope: center, feedback: false,
+     source: POL-02 §6, label: 맞춤 규격 대상 출고 비중 기준}
+  - {key: gate.CUSTOM.delta_fill, value: 2, type: float, unit: "%p", range: [0, 50], scope: center, feedback: false,
+     source: POL-02 §6, label: 맞춤 규격 충진율 개선 기준}
+  - {key: gate.CUSTOM.payback_m, value: 3, type: float, unit: 개월, range: [0, 36], scope: center, feedback: true, hq_tune: true,
+     source: POL-02 §6, label: 맞춤 규격 판비·목형비 회수 기간}
+  - {key: no_new_specs, value: false, type: bool, scope: center, feedback: true,
+     source: POL-02 §1, label: 신규 규격 없이 기존 규격만 보충}
+  - {key: no_custom, value: false, type: bool, scope: center, feedback: true,
+     source: POL-02 §6, label: 맞춤 제작 제외(기성품만)}
+
+  # ── 충진율 목표 (POL-02 §7) ─────────────────────────────────────────────
+  - {key: fill_target_pct, value: 50, type: float, unit: "%", range: [20, 90], scope: center, feedback: false,
+     source: POL-02 §7, label: 포장 규제 대상 출고 충진율 목표}
+  - {key: fill_mode, value: false, type: bool, scope: center, feedback: true,
+     source: POL-02 §7, label: ESG 우선 모드(ISO 18602 기준, 절감 대신 충진율 개선으로 선정)}
+  - {key: fill_mode_min_gain, value: 2, type: float, unit: "%p", range: [0.5, 20], scope: center, feedback: false,
+     source: POL-02 §7, label: ESG 우선 모드 후보의 규제 대상 충진율 최소 개선}
+  - {key: fill_mode_max_extra_cost, value: 300000, type: int, unit: 원, range: [0, 5000000], scope: center, feedback: true,
+     source: POL-02 §7, label: ESG 우선 모드 월 추가 비용 한도}
+  - {key: fill_sku_limit, value: 5, type: int, unit: 개, range: [0, 20], scope: center, feedback: false,
+     source: POL-02 §7, label: ESG 우선 모드 상품 전용 후보 최대 개수(규제 대상 저충진 상품)}
+
+  - {key: hq_stall_gain, value: 2, type: float, unit: "%p", range: [0.5, 20], scope: global, feedback: false,
+     source: POL-02 §7, label: 본부 판정 — 목표 미달이면서 전월 대비 이 폭 미만 개선이면 효율 개선 필요}
+  - {key: hq_months, value: 6, type: int, unit: 개월, range: [1, 24], scope: global, feedback: false,
+     source: POL-02 §7, label: 본부 리포트에 넣는 최근 개월 수}
+  - {key: hq_cap_step, value: 5, type: int, unit: 종, range: [1, 15], scope: global, feedback: false,
+     source: POL-02 §7, label: ESG 우선 모드에도 정체인 센터의 규격 상한 상향 폭(본부장 승인)}
+  # 본부 추천 — 본부장이 센터별로 조정하는 3개(hq_tune: 월 절감액·충진율 개선 폭·목형비 회수 기간)를 판정 단계만큼 푼다
+  - {key: hq_reco_saving_step, value: 50000, type: int, unit: 원, range: [10000, 300000], scope: global, feedback: false,
+     source: POL-02 §7, label: 본부 추천 — 주의 1단계·효율 개선 필요 2단계만큼 월 절감액 기준을 낮추는 폭}
+  - {key: hq_reco_fill_step, value: 0.5, type: float, unit: "%p", range: [0.1, 5], scope: global, feedback: false,
+     source: POL-02 §7, label: 본부 추천 — 단계당 충진율 개선 폭 기준을 낮추는 폭}
+  - {key: hq_reco_payback_step, value: 1, type: float, unit: 개월, range: [0.5, 6], scope: global, feedback: false,
+     source: POL-02 §7, label: 본부 추천 — 단계당 목형비 회수 기간을 늘리는 폭}
+
+  # ── 규격 수 상한 (POL-02 §3) ────────────────────────────────────────────
+  - {key: spec_max_active, value: 15, type: int, unit: 종, range: [3, 30], scope: center, feedback: false,
+     source: POL-02 §3, label: 센터당 활성 규격 상한}
+
+  # ── 안전 재고·주문 수량 (POL-03, POL-04) ───────────────────────────────
+  - {key: safety_days, value: 7, type: int, unit: 일, range: [3, 30], scope: center, feedback: true,
+     source: POL-03 §1, label: 안전 재고 일수}
+  - {key: peak_safety_days, value: 10, type: int, unit: 일, range: [3, 30], scope: center, feedback: false,
+     source: POL-03 §1, label: 성수기 안전 재고 일수}
+  - {key: peak_months, value: [11, 12], type: int_list, range: [1, 12], scope: global, feedback: false,
+     source: POL-03 §1, label: 성수기(월)}
+  - {key: peak_auto, value: false, type: bool, scope: center, feedback: false,
+     source: POL-03 §1, label: 성수기 안전 재고 자동 적용}
+  - {key: forecast_seasonal, value: false, type: bool, scope: global, feedback: false,
+     source: POL-03 §2, label: 출고 예측에 전년 동월 계절 지수 적용(끄면 최근 3개월 평균)}
+  - {key: rounding_unit, value: 100, type: int, unit: 개, range: [50, 1000], scope: center, feedback: true,
+     source: POL-03 §2, label: 제안 수량 반올림 단위}
+  - {key: max_stock_months, value: 2, type: float, unit: 개월, range: [1, 6], scope: center, feedback: false,
+     source: POL-04 §2, label: 규격별 재고 보관 상한(소모분)}
+  - {key: mom_note_pct, value: 30, type: float, unit: "%", range: [5, 100], scope: global, feedback: false,
+     source: POL-03 §4, label: 전월 대비 금액 변동 근거 기준}
+  - {key: lookback_since_change, value: false, type: bool, scope: center, feedback: false,
+     source: POL-05 §2, label: 박스·충진율 분석을 마지막 박스 구성 변경(신규 규격 입고) 이후 배정으로만}
+  - {key: lookback_days, value: 30, type: int, unit: 일, range: [7, 365], scope: center, feedback: false,
+     source: POL-05 §2, label: 분석 기간(최근 출고)}

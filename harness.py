@@ -90,7 +90,7 @@ def record(kind: str, **data) -> None:
 
 
 def emit(event: str, **data) -> None:
-    """화면 진행 이벤트: TOKEN · TOOL_START · TOOL_END · APPROVAL_REQUIRED · DONE · FAILED"""
+    """화면 진행 이벤트: TOKEN · TOOL_START · TOOL_END · PROGRESS(단계 결과 문장) · APPROVAL_REQUIRED · DONE · FAILED"""
     tr = _trace.get()
     if not tr:
         return
@@ -166,6 +166,22 @@ def count_tool_call() -> None:
 # ---------------------------------------------------------------- Instructions
 def prompt(name: str) -> str:
     return (PROMPTS / f"{name}.md").read_text(encoding="utf-8").strip()
+
+
+SKILLS = Path(__file__).resolve().parent / "skills"
+
+
+def skill(name: str) -> str:
+    """skills/<name>/SKILL.md 본문(앞 메타데이터 제외). 문장 규칙 원본 — Claude Code 스킬도 같은 파일을 가리킨다"""
+    text = (SKILLS / name / "SKILL.md").read_text(encoding="utf-8")
+    if text.startswith("---"):
+        text = text.split("---", 2)[2]
+    return text.strip()
+
+
+def instructions(prompt_name: str, skill_name: str) -> str:
+    """LLM 지시문 = 역할·출력 형식(prompts/<prompt_name>.md) + 문장 규칙 스킬(skills/<skill_name>)"""
+    return prompt(prompt_name) + "\n\n" + skill(skill_name)
 
 
 # ---------------------------------------------------------------- Guardrails·Tools·Context

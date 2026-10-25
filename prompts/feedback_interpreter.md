@@ -17,6 +17,8 @@
 - no_custom (bool): 맞춤 제작(유팩 견적) 규격 없이 기성품만
 - gate.CUSTOM.monthly_saving (int, 0~5000000): 맞춤 제작 규격 월 절감액 기준(원)
 - gate.CUSTOM.payback_m (number, 0~36): 맞춤 제작 판비·목형비 회수 기간 기준(개월)
+- fill_mode (bool): ESG 우선 모드(ISO 18602 기준) — 절감이 안 나도 규제 대상 충진율을 올리는 규격 선정
+- fill_mode_max_extra_cost (int, 0~5000000): ESG 우선 모드의 월 추가 비용 한도(원)
 
 # 판단 원칙
 - 의견에 숫자가 있으면 그 숫자를 씁니다. 숫자가 없는 방향 표현("넉넉하게")은 근거 규정이나 과거 기록의 값을 씁니다.

@@ -10,10 +10,12 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 # Runtime files only. Catalog data lives in the proposals volume, outside the image.
-COPY --chown=app:app agent_server.py box_spec_agent.py harness.py llm_writer.py initialize_knowledge.py ./
+COPY --chown=app:app agent_server.py box_spec_agent.py hq_report_agent.py harness.py llm_writer.py initialize_knowledge.py ./
 COPY --chown=app:app mcp_servers ./mcp_servers
 COPY --chown=app:app knowledge ./knowledge
 COPY --chown=app:app prompts ./prompts
+COPY --chown=app:app skills ./skills
+COPY --chown=app:app rules ./rules
 RUN mkdir -p /app/proposals && chown app:app /app/proposals
 USER app
 

@@ -5,7 +5,7 @@
   ⑨ evaluate 가 facts 에 없는 숫자를 찾아 감점하므로, 지어낸 숫자는 재작성 루프에서 걸러진다.
 - OPENAI_API_KEY 가 없거나 호출이 실패하면 None/error → 에이전트는 규칙 기반 문장을 그대로 쓴다.
 - 모델: BOX_AGENT_LLM_MODEL (기본 gpt-5.4-mini). 응답은 JSON 스키마(strict)로 받는다.
-- 지시문은 prompts/writer.md, 재시도·대체 모델·토큰 기록은 harness.llm_json.
+- 지시문은 prompts/writer.md(역할·출력) + skills/proposal-writing(문장 규칙), 재시도·대체 모델·토큰 기록은 harness.llm_json.
 """
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ async def polish(facts: dict, reasons: list[str], checks: list[str], feedback: l
     if example:
         payload["example"] = example
     try:
-        out = await harness.llm_json("write_proposal", harness.prompt("writer"), payload, SCHEMA, "proposal_text")
+        out = await harness.llm_json("write_proposal", harness.instructions("writer", "proposal-writing"), payload, SCHEMA, "proposal_text")
     except Exception as e:
         return {"error": f"{type(e).__name__}: {str(e)[:200]}"}
     if len(out["reasons"]) != 3 or len(out["checkItems"]) != len(checks):

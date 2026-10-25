@@ -17,7 +17,7 @@ Spring Boot ──내부 HTTP──▶ agent_server.py (FastAPI, LangGraph + Har
 | Agent 서버 | `agent_server.py` | 작업 실행(202)·SSE 진행 이벤트·승인 후 재개 | DB 업무 데이터를 직접 쓰지 않음(checkpointer만) |
 | 그래프 | `box_spec_agent.py` | ①~⑪ StateGraph. CLI 실행도 같은 그래프 | 숫자는 MCP 계산 도구만 만든다 |
 | Harness | `harness.py`, `prompts/*.md` | 한도·재시도·기록·마스킹·인용 대조 | 아래 'Harness' 표 |
-| business-mcp | `mcp_servers/business_mcp.py` | 조회·계산·제안 저장 26개 도구 (wms·catalog·custom_quote·packing·forecast·proposal 모듈) | DB 직접 접근 없음, Spring `/internal/v1/**` 호출 |
+| business-mcp | `mcp_servers/business_mcp.py` | 조회·계산·제안 저장 28개 도구 (wms·catalog·custom_quote·packing·forecast·proposal 모듈) | DB 직접 접근 없음, Spring `/internal/v1/**` 호출 |
 | rag-mcp | `mcp_servers/rag_mcp.py` | 규정·반려 기록 검색, Resource `policy://`·`feedback://` | 업무 데이터 변경 없음 |
 | Spring 내부 API | `server/chagok/.../domain/agent` | 에이전트용 조회·제안 저장, 센터·규격 소속 검증 | `X-Internal-Token`(INTERNAL_API_TOKEN), 세션·CSRF 없음 |
 
@@ -133,6 +133,19 @@ python tests/knowledge_eval.py       # rag 검색 적중 (top-3, --k 1)
 - 나가는 곳: `APPROVAL_REQUIRED.proposalHtml`, 저장 `summary.bodyHtml`, `./proposals/<jobId>.html`. ⑨ 평가는 md 로만 한다
 - 외부 라이브러리 없이 HTML 한 파일(인라인 SVG 차트·다크 모드). 차트 색은 색각 검사 통과 값 — 바꾸면 다시 검사
 
+## 본부 통합 효율화 리포트 에이전트 (`hq_report_agent.py`)
+- 흐름: load_context → collect → judge → plan_actions → write_report → human_review(승인 대기) → apply_actions
+  - collect: 센터마다 최근 `hq_months`(6)개월의 실제 배정(`list_product_fits`)·규격·지난 제안 → `center_month_metrics`(hq-mcp 도구).
+    도입 전 = 승인된 AI 제안으로 등록한 규격(description `catalog:`·`custom:`)을 뺀 박스 세트. 효율화 전(절감 0) 달은 뺀다
+  - judge: 규제 대상 충진율 목표(`fill_target_pct`, 50%) 이상 양호 / 미달·전월 대비 +`hq_stall_gain`(2%p) 이상 주의 / 미달·그 미만 효율 개선 필요
+  - plan_actions: 효율 개선 필요 센터 → ESG 우선 모드(`fill_mode`) 켜기, 이미 켜져 있으면 규격 상한 +`hq_cap_step`(5)종
+  - human_review: 조치는 센터 판단 규칙을 바꾸는 일이라 본부장 승인 앞에서 멈춘다. 승인하면 `set_center_overrides`(rules-mcp, 변경 도구)로
+    센터 덮어쓰기에 저장 → 다음 월말 박스 주문 제안부터 적용. 본부 에이전트가 박스 제안 에이전트를 직접 돌리지는 않는다
+- 실행: CLI `python hq_report_agent.py --month 2026-09`, 서버 `POST /internal/agent/hq-reports {month, note}` → 승인은 기존 `/tasks/{taskId}/approval`
+- 출력: `HQ_REPORT_DIR`(기본 `proposals/hq/<월>/hq_report_YYYY-MM.html`), 센터 덮어쓰기는 `POLICY_RULE_OVERRIDES`(compose: 볼륨 `/app/proposals/rule_overrides`)
+- 양식 `mcp_servers/templates/hq_report/` (2026-10-23 확정, `hq_render.render`): 요약(월 절감액 = 도입 전 대비 월 수준, 이번 달 = 출고당 효율 변화,
+  ±1% 미만 '변화 없음', 연간 = 일평균 × 365) · 센터 카드 · 월별 추이 · 효율 개선 필요 센터 조치
+
 ## 문장 작성(⑧)과 검토(⑨)
 - `sample_proposal_2026-11.md` = 양식대로 채운 예시 제안서. `get_template`의 `example_md`로 LLM에 넘겨 문체·구성만 참고하게 한다
   (숫자·규격명은 쓰지 않음, 가져오면 ⑨ 숫자 대조에서 감점). 경로는 `PROPOSAL_SAMPLE`로 바꿀 수 있다
@@ -171,13 +184,14 @@ business-mcp 는 **DB 에 직접 접근하지 않고** Spring `/internal/v1/**` 
 | `GET /warehouses` | list_warehouses |
 | `GET /warehouses/{id}/box-specs?activeOnly=` | list_box_specs, get_box_inventory |
 | `GET /warehouses/{id}/event-stats` | 모든 조회의 meta(입력 기준 시각·status별 건수·PENDING 수) |
-| `GET /warehouses/{id}/product-shipments?from&to&statuses` | list_product_fits (치수·`weightG`·출고 수) |
+| `GET /warehouses/{id}/product-shipments?from&to&statuses` | list_product_fits (치수·`weightG`) |
+| `GET /warehouses/{id}/box-usage?from&to` | list_product_fits (서버가 저장한 실제 배정: 상품 × 박스 건수·충진율, 포장 대기 NO_AVAILABLE_BOX) |
 | `GET /warehouses/{id}/monthly-shipments?fromMonth&toMonth&statuses` | get_shipment_history |
 | `GET /warehouses/{id}/purchase-orders?from&to` | list_purchase_orders |
 | `GET /warehouses/{id}/procurement-proposals?limit` | list_past_proposals |
 | `PUT /warehouses/{id}/procurement-proposals/{proposalId}` | save_proposal (한 트랜잭션, 센터·규격 소속 검증) |
 
-- 기간은 센터 시간대(Asia/Seoul) 날짜로 Spring 이 해석한다. 출고 1건 = `item_event` 1행(`SHIPMENT_EVENT_STATUSES`로 status 제한 가능).
+- 기간은 센터 시간대(Asia/Seoul) 날짜로 Spring 이 해석한다. 출고 1건 = `item_event` 1행. 기본은 박스를 쓰는 출고(SUCCEEDED·WAITING)만 센다(`SHIPMENT_EVENT_STATUSES`로 바꿀 수 있음, 식별 실패 FAILED 는 박스를 쓰지 않아 제외).
   진행 중인 달은 경과 일수로 한 달치 환산(business-mcp)
 - 발주 대상 월 = 연결된 `procurement_proposal.target_month`, 없으면 납품 희망일의 월.
   전월·전년 비교 금액은 제안서로 만든 정기 발주(`proposal_id` 있음)만, 없으면 반려 제외 전체 합계
@@ -214,12 +228,30 @@ python tests/fake_boxking.py 8765 &
 BOXKING_BASE_URL=http://127.0.0.1:8765 BOXKING_MIN_DELAY=0 CATALOG_DB=test.db python mcp_servers/catalog_server.py --refresh
 ```
 
+## 판단 규칙 (rules/box_order_rules.yaml)
+- 판단에 쓰는 숫자는 이 파일 하나에만 둔다(게이트, 군집·단일 품목 기준, 충진율 목표, 규격 상한, 안전 재고, 반올림, 재고 상한 등 31개).
+  각 규칙: 값 · 단위 · 허용 범위 · scope(center = 센터별 조정 가능 / global = 전사 고정) · feedback(반려로 변경 가능) · 근거 조항
+- 에이전트는 시작할 때 business-mcp `get_policy_rules(warehouse_id)` 로 기본값 + 센터별 덮어쓰기(`rules/overrides/<warehouseId>.yaml`)를 받는다.
+  범위 밖·전사 고정 키의 덮어쓰기는 버리고 로그에 남긴다. 반려로 바꿀 수 있는 키·범위도 이 파일 기준
+- 규정 문서(`knowledge/policies/*.md`)의 `{규칙 키}` 자리는 rag 적재(`--ingest`)·원문 열람 때 규칙값으로 채운다 → 문서 숫자 = 판단 숫자.
+  **숫자를 바꿀 때는 규칙 파일만 고치고 `--ingest`** 를 다시 돌린다(문서 숫자를 직접 쓰지 않는다)
+- 점검: `python tests/policy_rules_check.py` — 문서의 키가 규칙에 있는지, 모든 규칙이 문서에 쓰이고 코드가 읽는지, 반려 지시문 목록이 맞는지
+- 제안 summary 에 `rules`(버전·센터 조정값·적용값), HTML 상세보기에 "판단 규칙 v1, 이 센터 조정값 …"
+- 나중에 DB(policy_rule, policy_rule_override)·본부장 화면으로 옮길 때는 `policy_rules.load_rules / load_overrides` 안쪽만 바꾼다
+- 규칙으로 들어간 정책: 활성 규격 상한(`spec_max_active`, 기본 15종. 기존 규격은 비활성화하지 않고 넘으면 절감 작은 신규 후보부터 제외,
+  `check_spec_limit`), 재고 보관 상한(`max_stock_months`, `plan_order` overStock), 성수기 안전 재고(`peak_*`, 기본 끔),
+  전월 대비 금액 변동 사유(`mom_note_pct`)
+
 ## 신규 규격 후보 구간 (군집 + 단일 품목)
 - 군집 `find_misfit_clusters`: 저충진(45% 미만) 상품을 정렬 치수의 **로그**(납작·길쭉한 형태가 반영되게)로, **출고량 가중** k-means.
   시작점 10번 중 오차 최소, 군집 수는 2~`max_clusters`(기본 5) 중 가중 실루엣 점수 최대
 - 단일 품목 `find_sku_candidates`: 충진율 20% 미만 · 출고 비중 1% 이상 상품을 낭비 부피 × 출고량 순으로 최대 5개(`sku_*` 설정).
   군집에 묻히는 고출고 단일 품목(예: 키보드)을 따로 본다. 기성품 검색 부피 상한은 '지금 박스보다 작음'만(군집은 이상 치수 2배까지)
 - 단일 품목은 게이트에서 출고 비중(3%) 조건을 보지 않는다(월 절감·충진율 개선·회수 기간만)
+- ESG 우선 모드(ISO 18602 기준, `fill_mode`, 본부가 켠 센터): 포장 규제 대상 박스(세 변 합 50cm 초과)에 담기고 충진율이 목표(50%) 미만인 상품을
+  낭비 부피 × 출고량 순으로 최대 `fill_sku_limit`(5)개 더 본다. 이 상품들(규제 대상 박스의 기존 단일 품목 포함)은 기성품이 있어도
+  상품 치수에 맞춘 맞춤 후보 견적을 함께 받는다 → 가늘거나 작은 상품(집게 등)은 세 변 합 50cm 이하 박스로 옮겨 규제 대상에서 빠지고,
+  중간 치수 상품(벌꿀·잼 등)은 높이를 맞춘 박스로 충진율이 오른다. 넓고 납작한 상품(식탁보·의류)은 유팩 최소 높이 50mm 때문에 한계
 - 선정: 군집·단일 후보가 같은 출고를 두고 겹치므로 절감이 큰 순으로 넣으며 **이미 고른 것 위에 더 줄어드는 만큼**(`marginal_saving`)으로 다시 판정
 - 주의: 새 박스가 들어오면 그 박스가 '들어가는 가장 작은 박스'가 되는 다른 상품도 함께 옮겨 간다(서버 매칭 규칙과 같음).
   작은 슬림 박스는 단가가 높아 오히려 손해가 되는 경우가 많고(운임은 2만㎤ 이하 3,000원 동일), 그런 후보는 게이트에서 떨어진다
@@ -235,7 +267,7 @@ BOXKING_BASE_URL=http://127.0.0.1:8765 BOXKING_MIN_DELAY=0 CATALOG_DB=test.db py
   compose 에서는 `/app` 이 쓰기 불가라 `UPACKAGE_CACHE_DB=/app/proposals/custom_quotes.db`(볼륨). 캐시를 못 써도 견적은 돌려준다.
   `CUSTOM_QUOTE=0` 이면 견적을 묻지 않는다
 - 공식 API 가 아니라 사이트가 바뀌면 실패한다 → 후보에서 빼고 '확인 필요'에 "담당자 견적 필요"로 적는다(작업은 계속)
-- 게이트 `gate.CUSTOM`: 월 절감 30만 원·출고 비중 3%·충진율 +10%p + 초기비 회수 6개월(`payback_m`).
+- 게이트 `gate.CUSTOM`: 월 절감 30만 원·출고 비중 3%·충진율 +2%p + 초기비(판비·목형비) 회수 3개월(`payback_m`).
   ② 안 들어가는 상품용은 게이트 없이 주문에 넣고(그 상품 출고도 소모량에 포함) 담당자 결정을 '확인 필요'에 적는다
 - 견적 두 번: 1차는 후보 선정용(월평균 수량), plan_order 뒤 2차는 확정 제안 수량으로 다시 받아 주문표 단가·금액·합계에 쓴다.
   2차가 실패하면 1차 단가를 두고 '단가 재확인 필요'. 2차 단가로 게이트를 다시 심사하지는 않는다
@@ -244,9 +276,13 @@ BOXKING_BASE_URL=http://127.0.0.1:8765 BOXKING_MIN_DELAY=0 CATALOG_DB=test.db py
 - 저장: `summary.newSpecs` 에 `type` = `CUSTOM` / `CUSTOM_UNFIT`, `quote`(1차), `orderQuote`(2차), `initCost`
 - 단독 확인: `python mcp_servers/custom_quote_server.py --quote 300 200 150 1000`
 
-## 운임 (경동 정기화물)
-- 운임표: `mcp_servers/templates/kyungdong_regular_freight.md`(`FREIGHT_TABLE`, 2026-10-22 추출). 실행할 때 md 표를 읽는다
-- 1건 운임: 50,000㎤ 이하(소화물)는 소화물 표준운임(부피)만, 그 위는 경동 부피요율표(㎤)와 무게 운임(중대형화물 표준운임 → 운임표 4, kg) 중
+## 운임 (택배 기본요금, 한도 초과는 경동 정기화물)
+- 기본: 택배 기본요금표 `mcp_servers/templates/parcel_basic_fee.md`(`PARCEL_TABLE`, 법제처 찾기쉬운 생활법령 2026-09-15 기준).
+  B2C 이커머스 출고(주문 1건 = 박스 1개)라 정기화물보다 택배 요금이 맞다. 세 변 합 등급과 무게 등급 중 높은 등급, 동일권 요금
+  (극소 60cm·2kg 5,000원 / 소 120cm·10kg 6,000원 / 중 140cm·20kg 7,000원 / 대 160cm·30kg 8,000원). 실제 계약 단가가 있으면 표를 바꾼다
+- 세 변 합 160cm·무게 30kg·최장변 100cm 를 넘는 박스만 아래 정기화물 운임
+- 정기화물 운임표: `mcp_servers/templates/kyungdong_regular_freight.md`(`FREIGHT_TABLE`, 2026-10-22 추출). 실행할 때 md 표를 읽는다
+- 정기화물 1건 운임: 50,000㎤ 이하(소화물)는 소화물 표준운임(부피)만, 그 위는 경동 부피요율표(㎤)와 무게 운임(중대형화물 표준운임 → 운임표 4, kg) 중
   높은 금액. 부피 = 배정 박스 내치수(외치수 없음), 무게 = 상품 실중량(`product.weight_g`, 박스 무게 제외). 무게가 없으면 부피 운임만
 - 표 문구("부피 및 무게 운임 중 높은 금액")를 소화물에도 그대로 적용하면 무게표 최저 4,500원 때문에 소화물 3,000~4,000원 구간이
   쓰이지 않는다 → 운영 판단(2026-10-22)으로 소화물은 부피 운임 우선. 문구 그대로 계산은 `FREIGHT_MODE=max`
@@ -258,6 +294,11 @@ BOXKING_BASE_URL=http://127.0.0.1:8765 BOXKING_MIN_DELAY=0 CATALOG_DB=test.db py
   `운임 기준` 문장(`freightBasis`)
 
 ## 들어가는지 판정·충진율 (packing-engine)
+- **현재 박스는 서버가 포장하며 저장한 실제 배정**(`item_event.box_spec_id`·`fill_rate_pct`, `/box-usage`)을 쓴다. 에이전트가 따로 배정하지 않는다.
+  상품이 여러 박스로 나갔으면(품절·수동 매칭) 상품 × 박스 행으로 나눈다. 쓸 박스가 없어 대기한 건은 보유 규격에 들어가면 '품절 대기'
+  (확인 필요 + 보충되면 그 박스 소모로 계산), 안 들어가면 맞춤 제작 대상
+- 신규 후보 효과만 가정 계산이다: 실제 배정에서 출발해, 새 박스가 들어가고 지금 박스보다 작으면 그 박스로 옮긴다(서버 매칭 규칙).
+  기존 박스끼리는 다시 배정하지 않는다. 최근 도입 효과는 그 박스가 없었다면 서버가 골랐을 박스와 비교한다
 - 상품 치수를 6방향 회전(90도)으로 먼저 본다.
 - 판정 기준은 서버 상품 매칭(`FillRateCalculator`)과 같다. 매 실행 `GET /internal/v1/matching-policy`로 서버 `chagok.matching.tilted`(기울임 사용·여유)를 읽고, 기본 판정 여유는 0mm. 기울임이 켜져 있으면 안 들어가는 박스에 한 평면 기울임 판정(Carver 조건)을 적용한다:
   상품 변 (p,q,r) × 박스 변 (a,b,c)의 모든 순서에서 r ≤ c 이고 rectFits(p,q,a,b)이면 들어감.
@@ -270,9 +311,9 @@ BOXKING_BASE_URL=http://127.0.0.1:8765 BOXKING_MIN_DELAY=0 CATALOG_DB=test.db py
 - 배송 중(IN_TRANSIT) 발주가 있는 동안에는 제안서 작업을 하지 않는다는 운영 전제라 들어올 재고는 따로 빼지 않는다.
 
 ## 주문 수량 계산
-- 다음 달 예상 소모 = 예측 출고 × (신규 규격 포함 박스 세트로 재배정한 규격별 사용 비중)
+- 다음 달 예상 소모 = 예측 출고 × 규격별 사용 비중(실제 배정 + 신규 규격으로 옮겨 가는 출고 + 품절 대기)
 - 안전 재고 = 일평균 예상 소모 × 7일, 제안 수량 = 예상 소모 + 안전 재고 − 현재 재고 (100개 단위 반올림)
-- 출고 예측 = 최근 3개월 평균 × 전년 동월 계절 지수, 정확도 = 100 − 최근 6개월 백테스트 MAPE
+- 출고 예측 = 최근 3개월 평균 × 전년 동월 계절 지수, 정확도 = 100 − 최근 3개월 백테스트 MAPE(예측 창과 같은 3개월)
   (`mcp_servers/forecast_server.py` 의 `forecast_shipments`, 규칙 계산이며 LLM을 쓰지 않음)
 - 월별 출고 이력 = item_event 월별 건수(KST)
 

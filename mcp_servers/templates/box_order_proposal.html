@@ -63,7 +63,23 @@ details ul{margin:12px 0 0 18px;color:var(--text2)}details li{margin:6px 0}
 details h3{font-size:13px;margin:16px 0 4px}
 .tip{position:fixed;pointer-events:none;background:var(--text);color:var(--surface);font-size:12px;padding:6px 9px;border-radius:6px;opacity:0;transition:opacity .1s;white-space:nowrap;z-index:9}
 svg text{font:11px -apple-system,"Apple SD Gothic Neo",sans-serif;fill:var(--text2)}
-@media (max-width:640px){.kpis{grid-template-columns:1fr 1fr}.kpi:nth-child(2){border-right:none}.two{grid-template-columns:1fr}.sum span{min-width:0;width:100%}.sum strong{font-size:23px}}
+/* 화면 카드 안(iframe)에 넣을 때: 카드가 테두리를 맡으므로 바깥 여백·테두리를 없앤다 */
+.embed body{padding:0;background:var(--surface)}
+.embed .page{max-width:none;border:none;border-radius:0;box-shadow:none}
+/* 반쪽 화면(카드 폭 ~600px) 이하: 여백을 줄이고 요약은 이름 위·숫자 아래로 쌓고 표는 한 줄에 맞춘다 */
+@media (max-width:720px){
+  .top{padding:12px 16px}
+  .hero{padding:22px 18px}
+  .sum{gap:12px}.sum li{flex-direction:column;align-items:flex-start;gap:4px;padding-bottom:12px}
+  .sum span{min-width:0;font-size:13px}.sum strong{font-size:22px}.sum em{font-size:12px}
+  .kpis{grid-template-columns:1fr 1fr}.kpi{padding:14px 16px;border-bottom:1px solid var(--line)}
+  .kpi:nth-child(2n){border-right:none}.kpi:nth-last-child(-n+2){border-bottom:none}.kpi .v{font-size:19px}
+  section{padding:20px 16px}
+  table{font-size:12.5px}th,td{padding:8px 4px;white-space:nowrap}th{font-size:11px}
+  td:first-child{white-space:normal}
+  .two{grid-template-columns:1fr;gap:14px}.amount{font-size:24px}
+  details{padding:16px}
+}
 @media print{body{padding:0}.page{border:none;box-shadow:none}details>*{display:block}}
 </style>
 </head>
@@ -109,6 +125,14 @@ svg text{font:11px -apple-system,"Apple SD Gothic Neo",sans-serif;fill:var(--tex
   </details>
 </div>
 <div class="tip" id="tip"></div>
+<script>
+// 화면 카드 안(iframe)이면 embed 모양으로 바꾸고, 내용 높이를 부모에 알려 안쪽 스크롤 없이 늘었다 줄었다 하게 한다.
+// 문서 scrollHeight 는 틀 높이 아래로 줄지 않으므로(상세보기를 닫아도 그대로) 내용(body) 높이를 잰다
+if(window.self!==window.top){document.documentElement.classList.add('embed');
+ const send=()=>parent.postMessage({type:'chagok-proposal-height',height:Math.ceil(document.body.getBoundingClientRect().height)},'*');
+ new ResizeObserver(send).observe(document.body);addEventListener('load',send);
+ document.addEventListener('toggle',send,true)}
+</script>
 <script id="chart-data" type="application/json">{{{chartData}}}</script>
 <script>
 const D=JSON.parse(document.getElementById('chart-data').textContent);
@@ -117,13 +141,19 @@ function el(t,a,p){const e=document.createElementNS(NS,t);for(const k in a)e.set
 function hover(e,html){e.addEventListener('mousemove',v=>{tip.innerHTML=html;tip.style.opacity=1;tip.style.left=v.clientX+12+'px';tip.style.top=v.clientY+12+'px'});e.addEventListener('mouseleave',()=>tip.style.opacity=0)}
 // 도입 전/후 월 박스비·운임 누적 막대
 (function(){const s=document.getElementById('costChart');if(!s||!D.cost)return;const data=D.cost,
- max=Math.max(...data.map(d=>d[1]+d[2]))*1.12,H=190,top=10,x0=60,step=max>4e6?2e6:max>1e6?5e5:1e5;
- for(let v=0;v<max;v+=step){const y=top+H-v/max*H;el('line',{x1:x0,x2:430,y1:y,y2:y,stroke:'var(--grid)'},s);el('text',{x:x0-8,y:y+4,'text-anchor':'end'},s).textContent=v/1e4+'만'}
+ max=Math.max(...data.map(d=>d[1]+d[2]))*1.12,H=190,top=10,x0=60;
+ // 눈금 5개 안팎: 1·2·5 × 10^n 간격, 1억 이상은 억 단위로 표시
+ const raw=max/5,p10=10**Math.floor(Math.log10(raw)),step=[1,2,5,10].map(k=>k*p10).find(v=>v>=raw),
+  axis=v=>v>=1e8?(+(v/1e8).toFixed(1)).toLocaleString('ko-KR')+'억':(v/1e4).toLocaleString('ko-KR')+'만';
+ for(let v=0;v<max;v+=step){const y=top+H-v/max*H;el('line',{x1:x0,x2:430,y1:y,y2:y,stroke:'var(--grid)'},s);el('text',{x:x0-8,y:y+4,'text-anchor':'end'},s).textContent=axis(v)}
  data.forEach(([n,b,f],i)=>{const x=x0+40+i*170,w=90,hb=b/max*H,hf=f/max*H,yb=top+H-hb,yf=yb-hf-2;
   const rb=el('rect',{x,y:yb,width:w,height:hb,fill:'var(--s1)',rx:2},s);hover(rb,`${n}<br>박스비 ${won(b)}`);
   const rf=el('path',{d:`M${x},${yf+hf} v${-hf+4} q0,-4 4,-4 h${w-8} q4,0 4,4 v${hf-4} z`,fill:'var(--s2)'},s);hover(rf,`${n}<br>운임 ${won(f)}`);
   el('text',{x:x+w/2,y:yf-6,'text-anchor':'middle',style:'fill:var(--text);font-weight:600'},s).textContent=won(b+f);
-  el('text',{x:x+w/2,y:top+H+16,'text-anchor':'middle'},s).textContent=n});
+  // 이름은 '도입 전' / '(규격 목록)' 두 줄로 — 긴 규격 목록이 옆 막대 이름과 겹치지 않게
+  const [h,...rest]=n.split(' ('),lab=el('text',{x:x+w/2,y:top+H+16,'text-anchor':'middle'},s);
+  el('tspan',{x:x+w/2,dy:0,style:'fill:var(--text);font-weight:600'},lab).textContent=h;
+  if(rest.length){const t='('+rest.join(' (');el('tspan',{x:x+w/2,dy:14,style:'font-size:10px'},lab).textContent=t.length>34?t.slice(0,33)+'…)':t}});
 })();
 // 규격별 금액 가로 막대
 (function(){const s=document.getElementById('amtChart');if(!s||!D.amounts||!D.amounts.length)return;const d=D.amounts,max=Math.max(...d.map(x=>x[1]));
