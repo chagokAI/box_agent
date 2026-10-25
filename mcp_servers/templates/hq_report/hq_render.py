@@ -159,7 +159,6 @@ def report(mi):
 <div class="side"><div class="s"><div class="l">월 탄소 감축 · 운송 + 포장재</div><b>{tot('co2_cut'):,.0f} kg</b> <small>(이번 달 {"변화 없음" if flat(inc('inc_c'), tot('co2_cut')) else f"{inc('inc_c'):+,.0f} kg"})</small><span>연간 {tot('co2_cut') / DAYS30 * DAYS365 / 1000:,.1f}톤 · 소나무 약 {tot('co2_cut') / DAYS30 * DAYS365 / PINE_KG:,.0f}그루 1년 흡수량</span></div>
 <div class="s"><div class="l">효율 개선 필요 센터 · 목표 충진율 50%</div><b>{len(low)}곳</b> <small>{', '.join(short(d['center']) for d in low)}</small><span>{'이번 달 재실행 센터 - ' + ', '.join(short(d['center']) for d in rer) + ' · ' if rer else ''}목표 달성 {sum(1 for d in rows if d['fill'] >= 50)}곳 · 주의 {sum(1 for d in rows if d['status'] == '주의')}곳</span></div></div>
 </div></div>
-{'<section class="hqsum"><h2>본부 총평 <small>AI 작성 · 숫자는 집계 결과 그대로</small></h2><ul>' + "".join(f"<li>{x}</li>" for x in SUMMARY) + "</ul>" + reco_table() + "</section>" if SUMMARY and mi == len(MONTHS) - 1 else ""}
 <section class="cs"><h2>센터 현황 <small>{m}</small></h2><div class="cleg"><span><i class="k0"></i>도입 전 충진율</span><span><i class="k1"></i>누적 상승</span><span><i class="k2"></i>이번 달 상승</span><span><i class="kg"></i>50% 포장공간비율 기준 · 세 변 합 50cm 초과 박스 규제 범위</span></div><div class="cgrid">{cards}</div></section>
 <div class="kpis">
 <div class="kpi"><div class="l">누적 절감 ({FIRST}~)</div><div class="v">{won(cum_saving)}</div><div class="s">{len(MONTHS[:mi + 1])}개월 합계</div></div>
@@ -172,6 +171,7 @@ def report(mi):
 <table><tr><th>순위</th><th>센터</th><th>출고</th><th>이번 달 절감 <small>전월 대비</small></th><th>연간 추정</th><th>탄소 감축 <small>전월 대비</small></th><th>충진율 <small>전월 대비</small></th><th>개선 반영</th></tr>{tr}</table></section>
 <section><h2>월별 추이 <small>전 센터 월 절감 수준 (도입 전 대비)</small></h2><svg id="trend" viewBox="0 0 820 220" width="100%" role="img" aria-label="월별 절감액 추이"></svg></section>
 <section><h2>이번 달 재실행과 결과 <small>1차 후 목표 미달·전월 대비 +2%p 미만 → ESG 우선 모드로 재실행</small></h2><ul class="act">{lowhtml}</ul></section>
+{'<section class="hqsum"><h2>본부 총평 <small>AI 작성 · 숫자는 집계 결과 그대로</small></h2><ul>' + "".join(f"<li>{x}</li>" for x in SUMMARY) + "</ul>" + reco_table() + "</section>" if SUMMARY and mi == len(MONTHS) - 1 else ""}
 <details><summary>상세보기</summary>
 <h3>산정 기준</h3><ul>
 <li>운송 탄소: 필요 운행 = 박스 적재 부피 ÷ (7.168 m³ × 적재 효율 70%), 운행당 80 km ÷ 9.0 km/L × 경유 3.44 kg CO₂e/L (GLEC v3.0 WTW, STD-01·04)</li>
