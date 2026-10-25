@@ -1325,6 +1325,11 @@ async def save_result(state: AgentState):
                    "boxName": spec.get(r["code"], {}).get("name"), "sizeClass": spec.get(r["code"], {}).get("sizeClass"),
                    "qty": r["proposedQty"], "unitPriceKrw": r["unitPrice"], "currentQty": r["currentQty"],
                    "safetyQty": r["safetyQty"], "expectedUsage": r["expectedUsage"]} for r in plan["orderRows"]],
+        # 서버 계획 지표(AgentPlanProjection): 주문이 없는 규격까지 전체 규격의 다음 달 예상 소모 → 대시보드 안전 재고·소진 예측
+        "usagePlan": [{"code": r["code"], "dims": r["dims"], "unitPrice": r["unitPrice"], "expectedUsage": r["expectedUsage"]}
+                      for r in plan["rows"]],
+        # 서버 계획 지표의 월 절감: 선정 규격을 모두 넣었을 때 월 박스비+운임 절감(제안서 예상 이익과 같은 값)
+        "simulation": {"monthly_saving": (state.get("sim_combined") or {}).get("monthly_saving", 0)},
         "newSpecs": [{"code": r["code"], "name": cd[r["code"]]["name"], "dims": r["dims"],
                       "price": oq[r["code"]]["unitPrice"] if r["code"] in oq else r["price"],
                       "type": r["type"], "ref": cd[r["code"]]["ref"], "moq": cd[r["code"]]["moq"],
