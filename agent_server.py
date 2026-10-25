@@ -67,6 +67,7 @@ class Task:
         self.changed = asyncio.Condition()
         self.trace: dict | None = None
         self.runner: asyncio.Task | None = None
+        self.loop = asyncio.get_running_loop()        # 동기 노드(evaluate 등)는 다른 스레드에서 돌며 이벤트를 보낸다
 
     def push(self, event: str, data: dict) -> None:
         self.events.append({"id": len(self.events) + 1, "event": event, "data": data})
@@ -74,7 +75,7 @@ class Task:
             self.status = "WAITING_APPROVAL"
         elif event in TERMINAL:
             self.status = event
-        asyncio.get_running_loop().create_task(self._notify())
+        self.loop.call_soon_threadsafe(lambda: self.loop.create_task(self._notify()))
 
     async def _notify(self):
         async with self.changed:
