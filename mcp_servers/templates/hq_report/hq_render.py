@@ -187,10 +187,16 @@ def report(mi):
 <li>나무 환산: 연간 탄소 감축 ÷ 30년생 소나무 1그루 연 6.6 kg CO₂ (국립산림과학원 발표, 판본에 따라 값이 다름 — 최신 '주요 산림수종의 표준 탄소흡수량' 확인 필요). 참고: 30년생 소나무 숲 1ha 연 10.8톤 CO₂(2022-04 배포)</li></ul>
 <h3>가정</h3><ul>{'<li>' + NOTE + '</li>' if NOTE else ''}<li>배송 거리, 연비, 적재 효율, 평량은 가정값</li></ul></details></div>
 <div class="tip" id="tip"></div>
-<script id="cd" type="application/json">{chart}</script><script>{open(Path(__file__).with_name('hq_chart.js')).read()}</script></body></html>"""
+<script>{EMBED_JS}</script><script id="cd" type="application/json">{chart}</script><script>{open(Path(__file__).with_name('hq_chart.js')).read()}</script></body></html>"""
     path = OUT / f"hq_report_{m}.html"
     path.write_text(html, encoding="utf-8")
     return path
+
+
+# 화면 카드 안(iframe)이면 embed 모양(바깥 여백·테두리 없음)으로 바꾸고, 내용 높이를 부모에 알려 안쪽 스크롤 없이 맞춘다
+EMBED_JS = ("if(window.self!==window.top){document.documentElement.classList.add('embed');"
+            "const send=()=>parent.postMessage({type:'chagok-report-height',height:Math.ceil(document.body.getBoundingClientRect().height)},'*');"
+            "new ResizeObserver(send).observe(document.body);addEventListener('load',send);document.addEventListener('toggle',send,true)}")
 
 
 def reco_table():
