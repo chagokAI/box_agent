@@ -56,6 +56,24 @@ def load_overrides(warehouse_id: str | None) -> dict:
     return (yaml.safe_load(f.read_text(encoding="utf-8")) or {}) if f.exists() else {}
 
 
+def save_overrides(warehouse_id: str, changes: dict) -> dict:
+    """센터 덮어쓰기에 changes 를 합쳐 저장한다(본부 승인 뒤에만 부른다). 없는 규칙·전사 고정·범위 밖 값은 ValueError"""
+    rules = load_rules()["rules"]
+    clean = {}
+    for k, raw in changes.items():
+        r = rules.get(k)
+        if not r:
+            raise ValueError(f"{k}: 없는 규칙")
+        if r.get("scope") != "center":
+            raise ValueError(f"{k}: 전사 고정 규칙이라 센터별로 바꿀 수 없음")
+        clean[k] = cast(r, raw)
+    cur = load_overrides(warehouse_id)
+    cur.update(clean)
+    OVERRIDE_DIR.mkdir(parents=True, exist_ok=True)
+    (OVERRIDE_DIR / f"{warehouse_id}.yaml").write_text(yaml.safe_dump(cur, allow_unicode=True, sort_keys=True), encoding="utf-8")
+    return cur
+
+
 def effective(warehouse_id: str | None = None) -> dict:
     """기본값 + 센터별 덮어쓰기. 범위 밖·전사 고정(global) 키의 덮어쓰기는 버리고 rejected 에 남긴다"""
     base = load_rules()
