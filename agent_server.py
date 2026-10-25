@@ -9,6 +9,9 @@
   GET  /internal/agent/tasks/{taskId}/events     진행 이벤트 SSE (Last-Event-ID 로 이어 받기)
   POST /internal/agent/tasks/{taskId}/approval   승인·반려 {decision: APPROVED|REJECTED, comment} → 202, 같은 thread_id 로 재개
   POST /internal/agent/hq-reports                본부 통합 효율화 리포트 {month, note} → 202 {taskId} (조치가 있으면 승인 대기)
+  GET  /internal/agent/centers                   센터 목록 (지침서 화면)
+  GET  /internal/agent/centers/{id}/guide        센터 지침서: 센터별로 조정할 수 있는 규칙(기본값·적용값) + 그 값으로 채운 규정 문서
+  PATCH /internal/agent/centers/{id}/guide       규칙 조정 저장 {changes: {키: 값 | null(기본값으로)}} → 다음 제안부터 적용
   GET  /internal/agent/health
 
 이벤트: TOOL_START · TOOL_END · TOKEN(제안서 본문) · APPROVAL_REQUIRED(save_proposal 앞에서 멈춤) · DONE · FAILED
@@ -46,6 +49,10 @@ class TaskCreate(BaseModel):
     targetMonth: str | None = Field(None, pattern=r"^\d{4}-\d{2}$", description="기본: 다음 달")
     jobId: str | None = None
     taskId: str | None = Field(None, description="Spring 작업 id 를 그대로 쓰면 같은 id 로 추적된다")
+
+
+class GuideUpdate(BaseModel):
+    changes: dict = Field(..., description="{규칙 키: 값}. null 이면 센터 조정을 지우고 기본값으로")
 
 
 class HQTaskCreate(BaseModel):
@@ -203,6 +210,37 @@ async def create_hq_report(body: HQTaskCreate):
     task.runner = asyncio.create_task(_run(task, {"job": job, "messages": []}))
     await asyncio.sleep(0)
     return {"taskId": task_id, "traceId": task.trace and task.trace["traceId"], "job": job}
+
+
+@app.get("/internal/agent/centers", dependencies=[Depends(require_token)])
+async def list_centers():
+    return await agent.mcp_call("api", "business", "list_warehouses")
+
+
+async def _guide(warehouse_id: str) -> dict:
+    """센터 지침서 = 센터별로 조정할 수 있는 규칙 + 그 센터 값으로 채운 규정 문서(rag policy://{docId}/center/{id})"""
+    r = await agent.mcp_call("api", "business", "get_policy_rules", warehouse_id=warehouse_id)
+    idx = json.loads(await agent.HUB.read_resource("rag", "policy://index"))
+    docs = [{"docId": d["docId"], "title": d["title"],
+             "markdown": await agent.HUB.read_resource("rag", f"policy://{d['docId']}/center/{warehouse_id}")}
+            for d in idx["items"]]
+    return {"warehouseId": warehouse_id, "version": r["version"], "updatedAt": r["updatedAt"],
+            "rules": [x for x in r["rows"] if x["scope"] == "center"], "rejected": r["rejected"], "documents": docs}
+
+
+@app.get("/internal/agent/centers/{warehouse_id}/guide", dependencies=[Depends(require_token)])
+async def get_guide(warehouse_id: str):
+    return await _guide(warehouse_id)
+
+
+@app.patch("/internal/agent/centers/{warehouse_id}/guide", dependencies=[Depends(require_token)])
+async def update_guide(warehouse_id: str, body: GuideUpdate):
+    """센터 규칙 조정 저장(형·범위·조정 가능 여부는 규칙 파일로 검증). 다음 박스 주문 제안부터 적용된다"""
+    try:
+        await agent.mcp_call("api", "business", "set_center_overrides", warehouse_id=warehouse_id, changes=body.changes)
+    except Exception as e:                  # 규칙 파일 검증 실패: 'MCP 도구 실패: … set_center_overrides: <이유>' 에서 이유만
+        raise HTTPException(400, str(e).rsplit("set_center_overrides: ", 1)[-1]) from e
+    return await _guide(warehouse_id)
 
 
 @app.get("/internal/agent/tasks/{task_id}", dependencies=[Depends(require_token)])

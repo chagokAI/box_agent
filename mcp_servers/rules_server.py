@@ -21,7 +21,8 @@ def get_policy_rules(warehouse_id: str | None = None) -> dict:
 
 @mcp.tool()
 def set_center_overrides(warehouse_id: str, changes: dict) -> dict:
-    """[변경] 센터별 규칙 덮어쓰기에 changes({규칙 키: 값})를 합쳐 저장한다. 본부장 승인 뒤에만 부른다(본부 리포트 에이전트).
+    """[변경] 센터별 규칙 덮어쓰기에 changes({규칙 키: 값, null = 기본값으로})를 합쳐 저장한다.
+    본부장 승인 뒤(본부 리포트 에이전트)나 본부장이 지침서 화면에서 고칠 때만 부른다.
     형·범위·센터 조정 가능 여부는 규칙 파일 기준으로 검증하고, 맞지 않으면 오류. 반환: 저장 후 그 센터의 덮어쓰기 전체"""
     return {"warehouseId": warehouse_id, "overrides": policy_rules.save_overrides(warehouse_id, changes)}
 

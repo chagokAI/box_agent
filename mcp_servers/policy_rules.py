@@ -57,18 +57,24 @@ def load_overrides(warehouse_id: str | None) -> dict:
 
 
 def save_overrides(warehouse_id: str, changes: dict) -> dict:
-    """센터 덮어쓰기에 changes 를 합쳐 저장한다(본부 승인 뒤에만 부른다). 없는 규칙·전사 고정·범위 밖 값은 ValueError"""
+    """센터 덮어쓰기에 changes 를 합쳐 저장한다(본부 승인·본부장 지침서 수정). 값이 None 이면 그 키의 덮어쓰기를 지워 기본값으로.
+    없는 규칙·전사 고정·범위 밖 값은 ValueError"""
     rules = load_rules()["rules"]
-    clean = {}
+    clean, drop = {}, set()
     for k, raw in changes.items():
         r = rules.get(k)
         if not r:
             raise ValueError(f"{k}: 없는 규칙")
         if r.get("scope") != "center":
             raise ValueError(f"{k}: 전사 고정 규칙이라 센터별로 바꿀 수 없음")
+        if raw is None:
+            drop.add(k)
+            continue
         clean[k] = cast(r, raw)
     cur = load_overrides(warehouse_id)
     cur.update(clean)
+    for k in drop:
+        cur.pop(k, None)
     OVERRIDE_DIR.mkdir(parents=True, exist_ok=True)
     (OVERRIDE_DIR / f"{warehouse_id}.yaml").write_text(yaml.safe_dump(cur, allow_unicode=True, sort_keys=True), encoding="utf-8")
     return cur
@@ -94,7 +100,8 @@ def effective(warehouse_id: str | None = None) -> dict:
             rejected.append(str(e))
     rows = [{"key": k, "value": values[k], "default": r["value"], "overridden": k in applied,
              "unit": r.get("unit", ""), "label": r.get("label", k), "source": r.get("source", ""),
-             "scope": r.get("scope", "global"), "feedback": bool(r.get("feedback")), "type": r["type"],
+             "scope": r.get("scope", "global"), "feedback": bool(r.get("feedback")), "hqTune": bool(r.get("hq_tune")),
+             "type": r["type"],
              "range": r.get("range")} for k, r in base["rules"].items()]
     return {"version": base["version"], "updatedAt": base["updated_at"], "warehouseId": warehouse_id,
             "values": values, "rows": rows, "overrides": applied, "rejected": rejected}
