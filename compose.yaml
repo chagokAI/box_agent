@@ -59,6 +59,7 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}            # 없으면 로컬 2-gram 검색(KNOWLEDGE_EMBED=local 로 적재 필요)
       KNOWLEDGE_EMBED: ${KNOWLEDGE_EMBED:-openai}
       POLICY_RULE_OVERRIDES: /app/proposals/rule_overrides   # 규정 본문을 센터 규칙값으로 채울 때 읽는다(business-mcp 가 쓴다)
+      POLICY_DOC_OVERRIDES: /app/proposals/policy_docs        # 본부장이 지침서 화면에서 고친 규정 문서(전 센터 공통)
     volumes:
       - proposals:/app/proposals
     healthcheck: *tcp-health

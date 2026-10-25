@@ -9,6 +9,8 @@
   GET  /internal/agent/tasks/{taskId}/events     진행 이벤트 SSE (Last-Event-ID 로 이어 받기)
   POST /internal/agent/tasks/{taskId}/approval   승인·반려 {decision: APPROVED|REJECTED, comment} → 202, 같은 thread_id 로 재개
   POST /internal/agent/hq-reports                본부 통합 효율화 리포트 {month, note} → 202 {taskId} (조치가 있으면 승인 대기)
+  GET  /internal/agent/policies/{docId}          규정 문서 원문 틀(고치기용, {규칙 키} 자리 포함)
+  PUT  /internal/agent/policies/{docId}          규정 문서 수정 {markdown} (전 센터 공통) → 검색 색인도 다시 만든다
   GET  /internal/agent/centers                   센터 목록 (지침서 화면)
   GET  /internal/agent/centers/{id}/guide        센터 지침서: 센터별로 조정할 수 있는 규칙(기본값·적용값) + 그 값으로 채운 규정 문서
   PATCH /internal/agent/centers/{id}/guide       규칙 조정 저장 {changes: {키: 값 | null(기본값으로)}} → 다음 제안부터 적용
@@ -53,6 +55,10 @@ class TaskCreate(BaseModel):
 
 class GuideUpdate(BaseModel):
     changes: dict = Field(..., description="{규칙 키: 값}. null 이면 센터 조정을 지우고 기본값으로")
+
+
+class PolicyUpdate(BaseModel):
+    markdown: str = Field(..., min_length=10, max_length=50000)
 
 
 class HQTaskCreate(BaseModel):
@@ -241,6 +247,24 @@ async def update_guide(warehouse_id: str, body: GuideUpdate):
     except Exception as e:                  # 규칙 파일 검증 실패: 'MCP 도구 실패: … set_center_overrides: <이유>' 에서 이유만
         raise HTTPException(400, str(e).rsplit("set_center_overrides: ", 1)[-1]) from e
     return await _guide(warehouse_id)
+
+
+@app.get("/internal/agent/policies/{doc_id}", dependencies=[Depends(require_token)])
+async def get_policy(doc_id: str):
+    try:
+        return await agent.mcp_call("api", "rag", "get_policy_template", doc_id=doc_id)
+    except Exception as e:
+        raise HTTPException(404, str(e).rsplit("get_policy_template: ", 1)[-1]) from e
+
+
+@app.put("/internal/agent/policies/{doc_id}", dependencies=[Depends(require_token)])
+async def update_policy(doc_id: str, body: PolicyUpdate):
+    """규정 문서(전 센터 공통) 수정. 형식·{규칙 키} 검증은 rag 의 update_policy_document"""
+    try:
+        r = await agent.mcp_call("api", "rag", "update_policy_document", doc_id=doc_id, markdown=body.markdown)
+    except Exception as e:
+        raise HTTPException(400, str(e).rsplit("update_policy_document: ", 1)[-1]) from e
+    return {**r, **await agent.mcp_call("api", "rag", "get_policy_template", doc_id=doc_id)}
 
 
 @app.get("/internal/agent/tasks/{task_id}", dependencies=[Depends(require_token)])

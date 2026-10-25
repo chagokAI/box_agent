@@ -32,6 +32,8 @@ import policy_rules
 mcp = FastMCP("rag", log_level="WARNING")
 HERE = Path(__file__).resolve().parent
 KDIR = Path(os.getenv("KNOWLEDGE_DIR", HERE.parent / "knowledge"))
+# 본부장이 화면에서 고친 규정 문서(전 센터 공통). 같은 파일 이름이 있으면 기본 문서 대신 쓴다(이미지 /app 은 쓰기 불가 → 볼륨)
+DOC_OVERRIDE_DIR = Path(os.getenv("POLICY_DOC_OVERRIDES", HERE.parent / "knowledge" / "policy_overrides"))
 NS = uuid.UUID("2f1c7a52-0d7e-5b6a-9a1e-6b1f3c0a9e11")
 LOCAL_DIM = 1024
 
@@ -89,7 +91,7 @@ def _cos(a, b):
 def load_policies(values: dict | None = None) -> list[dict]:
     """규정 md → 조항('## ') 단위 청크. 제목 줄의 (POL-xx) 가 문서 id. values = 채울 규칙값(없으면 전사 기본값)"""
     out = []
-    for f in sorted((KDIR / "policies").glob("*.md")):
+    for f in _policy_files().values():
         text = policy_rules.render(f.read_text(encoding="utf-8"), values)   # {규칙 키} → 규칙값 (문서 숫자 = 판단 숫자)
         title = text.splitlines()[0].lstrip("# ").strip()
         doc_id = (re.search(r"\((POL-\d+)\)", title) or re.search(r"(POL-\d+)", f.name)).group(1)
@@ -237,12 +239,54 @@ def knowledge_status() -> dict:
 
 # ---------------------------------------------------------------- Resources (원문 읽기)
 def _policy_files() -> dict:
+    """docId → 파일. 화면에서 고친 문서(DOC_OVERRIDE_DIR 의 같은 이름)가 있으면 그것"""
     out = {}
     for f in sorted((KDIR / "policies").glob("*.md")):
         m = re.search(r"(POL-\d+)", f.name)
         if m:
-            out[m.group(1)] = f
+            o = DOC_OVERRIDE_DIR / f.name
+            out[m.group(1)] = o if o.exists() else f
     return out
+
+
+@mcp.tool()
+def get_policy_template(doc_id: str) -> dict:
+    """규정 문서 원문 틀(고치기용). {규칙 키} 자리는 센터마다 규칙값으로 채워진다. placeholders = 쓸 수 있는 규칙 키와 이름"""
+    f = _policy_files().get(doc_id.upper())
+    if not f:
+        raise ToolError(f"없는 규정: {doc_id}")
+    rules = policy_rules.load_rules()["rules"]
+    return {"docId": doc_id.upper(), "markdown": f.read_text(encoding="utf-8"), "edited": f.parent == DOC_OVERRIDE_DIR,
+            "placeholders": [{"key": k, "label": r.get("label", k)} for k, r in rules.items()]}
+
+
+@mcp.tool(annotations=ToolAnnotations(title="규정 문서 수정", destructiveHint=True, idempotentHint=True))
+def update_policy_document(doc_id: str, markdown: str) -> dict:
+    """[변경] 규정 문서(전 센터 공통)를 고쳐 저장하고 그 문서의 검색 색인을 다시 만든다. 본부장이 지침서 화면에서 고칠 때만 부른다.
+    첫 줄 '# 제목 (POL-xx)', 조항 '## n. 제목' 형식과 {규칙 키}(규칙 파일에 있는 키만)를 지켜야 한다"""
+    doc_id = doc_id.upper()
+    f = _policy_files().get(doc_id)
+    if not f:
+        raise ToolError(f"없는 규정: {doc_id}")
+    text = markdown.replace("\r\n", "\n").strip() + "\n"
+    first = text.splitlines()[0]
+    if not first.startswith("# ") or f"({doc_id})" not in first:
+        raise ToolError(f"첫 줄은 '# 제목 ({doc_id})' 형식이어야 합니다")
+    if not re.search(r"^## \d+\.", text, re.M):
+        raise ToolError("조항이 없습니다. '## 1. 제목' 형식으로 조항을 하나 이상 두세요")
+    unknown = sorted({k for k in policy_rules.PLACEHOLDER.findall(text)} - set(policy_rules.load_rules()["rules"]))
+    if unknown:
+        raise ToolError(f"규칙 파일에 없는 기준값 자리: {', '.join('{' + k + '}' for k in unknown)}")
+    DOC_OVERRIDE_DIR.mkdir(parents=True, exist_ok=True)
+    name = (KDIR / "policies").glob(f"*{doc_id}*.md").__next__().name
+    (DOC_OVERRIDE_DIR / name).write_text(text, encoding="utf-8")
+    _MEM.clear()
+    sections = [d for d in load_policies() if d["meta"]["docId"] == doc_id]
+    if db.enabled():                          # 없어진 조항은 지우고 남은 조항을 다시 임베딩
+        with db.connect() as con:
+            con.execute("DELETE FROM box_agent.knowledge WHERE kind = 'policy' AND source_id LIKE %s", (f"{doc_id} §%",))
+        _upsert(sections)
+    return {"docId": doc_id, "sections": len(sections)}
 
 
 @mcp.resource("policy://index", name="policy-index", mime_type="application/json",
