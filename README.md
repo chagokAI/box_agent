@@ -1,4 +1,4 @@
-# 차곡 에이전트
+# Chagok Agent API
 
 AI agents for box demand forecasting, packaging optimization, and operations reporting.
 
